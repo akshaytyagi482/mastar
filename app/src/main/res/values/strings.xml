@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mastar</string>
+    <string name="new_project">New Project</string>
+    <string name="no_projects">Koi project nahi hai — tap + to start editing!</string>
+    <string name="export">Export</string>
+    <string name="split">Split</string>
+    <string name="delete_clip">Delete</string>
+</resources>
