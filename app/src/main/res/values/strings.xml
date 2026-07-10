@@ -6,4 +6,12 @@
     <string name="export">Export</string>
     <string name="split">Split</string>
     <string name="delete_clip">Delete</string>
+    <string name="add_text">Add Text</string>
+    <string name="add_sticker">Add Sticker</string>
+    <string name="text_hint">Apna text likho…</string>
+    <string name="speed">Speed</string>
+    <string name="volume">Volume</string>
+    <string name="filter">Filter</string>
+    <string name="transition">Transition</string>
+    <string name="none">None</string>
 </resources>

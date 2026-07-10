@@ -83,10 +83,35 @@ are cached in memory by `TransitionLibrary` (zero-lag first tap).
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1. Core architecture | Media3 import/stitch/export, NDK bridge, Room model | ✅ scaffolded |
-| 2. Timeline UX | Pinch-zoom, drag/snap, split; sub-frame trim polish | 🔨 in progress |
-| 3. Creative layers | GL transition playback wiring, LUT filters, Lottie stickers, Oboe mixer, PIP layers | shader host + assets ready |
-| 4. Optimization & launch | Proxy editing for 4K, low-end device passes, AdMob export ad | not started |
+| 1. Core architecture | Media3 import/stitch/export, NDK bridge, Room model | ✅ done |
+| 2. Timeline UX | Pinch-zoom, drag/snap, split, playback-following playhead | ✅ done |
+| 3. Creative layers | Color filters (preview+export), timed text overlays (export), Lottie stickers (preview), clip inspector (speed/volume/filter/transition), Oboe stub | ✅ v1 done |
+| 4. Optimization & launch | Installable APK build; proxy editing for 4K, low-end passes, AdMob — pending | 🔨 APK shipping |
+
+### Phase 3 implementation notes
+
+- **Filters** are Media3 GlEffects (`FilterLibrary`): `RgbFilter`/`RgbAdjustment`/
+  `HslAdjustment`/`Contrast`/`Brightness` chains. The identical effect list is
+  applied in preview (`ExoPlayer.setVideoEffects`, swapped per clip on media
+  item transitions) and export (per-`EditedMediaItem` effects) — WYSIWYG.
+- **Text** is a TEXT clip (payload = string). Preview renders a Compose
+  overlay at the playhead; export uses `TimedTextOverlay` (a `TextOverlay`
+  that hides itself outside the clip's window) at composition level, where
+  presentation time equals project-timeline time.
+- **Stickers** are STICKER clips (payload = bundled Lottie asset). Preview
+  renders via lottie-compose; baking stickers into the export is pending
+  (BitmapOverlay from Lottie frames).
+- **GL transitions**: selection persists on clips (`transitionId`); the C++
+  shader host is built and bundled. Rendering across clip boundaries in
+  preview/export is the next engine milestone (SurfaceTexture pipeline /
+  custom GlEffect).
+
+### Still pending (Phase 4 full scope)
+
+- Proxy (downscaled) editing pipeline for fluid 4K on budget devices
+- Keyframe UI (engine + DB are ready)
+- Audio track mixing through the Oboe graph
+- AdMob on export (kept out for now — preserves zero-network editing)
 
 ### Phase 3 wiring notes (next up)
 

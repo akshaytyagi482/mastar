@@ -60,6 +60,35 @@ class ProjectRepository(private val db: MastarDatabase) {
         db.clipDao().splitClip(clip.id, atSourceMs, timelineMs)
     }
 
+    /** Returns the project's track of [type], creating it (top z-order) if absent. */
+    suspend fun ensureTrack(projectId: Long, type: TrackType): Long {
+        val tracks = db.trackDao().tracksForProject(projectId)
+        tracks.firstOrNull { it.type == type }?.let { return it.id }
+        val topZ = (tracks.maxOfOrNull { it.zOrder } ?: 0) + 1
+        return db.trackDao().insertTrack(
+            TrackEntity(projectId = projectId, type = type, zOrder = topZ)
+        )
+    }
+
+    /** Overlay clips (TEXT/STICKER) have no source media; duration is explicit. */
+    suspend fun addOverlayClip(
+        trackId: Long,
+        type: ClipType,
+        payload: String,
+        timelineStartMs: Long,
+        durationMs: Long,
+    ): Long = db.clipDao().insertClip(
+        ClipEntity(
+            trackId = trackId,
+            type = type,
+            sourceUri = "",
+            sourceStartMs = 0,
+            sourceEndMs = durationMs,
+            timelineStartMs = timelineStartMs,
+            payload = payload,
+        )
+    )
+
     suspend fun addKeyframe(keyframe: KeyframeEntity): Long =
         db.keyframeDao().insertKeyframe(keyframe)
 

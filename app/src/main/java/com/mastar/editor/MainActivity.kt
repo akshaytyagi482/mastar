@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
+import androidx.media3.common.util.UnstableApi
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -33,6 +34,7 @@ object Routes {
     fun editor(projectId: Long) = "editor/$projectId"
 }
 
+@OptIn(UnstableApi::class)
 @Composable
 private fun MastarNavGraph() {
     val navController = rememberNavController()

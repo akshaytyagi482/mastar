@@ -2,11 +2,13 @@ package com.mastar.editor.ui.editor
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
+import androidx.media3.common.util.UnstableApi
 import com.mastar.editor.MastarApp
+import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.data.db.ProjectWithTracks
 import com.mastar.editor.data.db.TrackType
@@ -19,6 +21,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 
+@UnstableApi
 class EditorViewModel(
     application: Application,
     private val projectId: Long,
@@ -38,6 +41,9 @@ class EditorViewModel(
 
     private val _exportState = MutableStateFlow<ExportEngine.State>(ExportEngine.State.Idle)
     val exportState: StateFlow<ExportEngine.State> = _exportState
+
+    fun selectedClip(): ClipEntity? =
+        _selectedClipId.value?.let { id -> allClips().firstOrNull { it.id == id } }
 
     fun selectClip(clipId: Long?) {
         _selectedClipId.value = clipId
@@ -60,22 +66,48 @@ class EditorViewModel(
         }
     }
 
-    fun moveClip(clipId: Long, newTimelineStartMs: Long) {
+    fun addTextClip(text: String, atMs: Long) {
         viewModelScope.launch {
-            val clip = project.value?.tracks
-                ?.flatMap { it.clips }
-                ?.firstOrNull { it.id == clipId } ?: return@launch
-            repository.updateClip(clip.copy(timelineStartMs = newTimelineStartMs))
+            val trackId = repository.ensureTrack(projectId, TrackType.TEXT)
+            repository.addOverlayClip(
+                trackId = trackId,
+                type = ClipType.TEXT,
+                payload = text,
+                timelineStartMs = atMs,
+                durationMs = DEFAULT_OVERLAY_DURATION_MS,
+            )
+        }
+    }
+
+    fun addStickerClip(lottieAsset: String, atMs: Long) {
+        viewModelScope.launch {
+            val trackId = repository.ensureTrack(projectId, TrackType.STICKER)
+            repository.addOverlayClip(
+                trackId = trackId,
+                type = ClipType.STICKER,
+                payload = lottieAsset,
+                timelineStartMs = atMs,
+                durationMs = DEFAULT_OVERLAY_DURATION_MS,
+            )
+        }
+    }
+
+    /** Persists an inspector edit (speed/volume/filter/transition) on a clip. */
+    fun updateClip(clipId: Long, transform: (ClipEntity) -> ClipEntity) {
+        viewModelScope.launch {
+            val clip = allClips().firstOrNull { it.id == clipId } ?: return@launch
+            repository.updateClip(transform(clip))
             refreshPreview()
         }
     }
 
+    fun moveClip(clipId: Long, newTimelineStartMs: Long) {
+        updateClip(clipId) { it.copy(timelineStartMs = newTimelineStartMs) }
+    }
+
     fun splitSelectedClipAtPlayhead(playheadMs: Long) {
         viewModelScope.launch {
-            val clipId = _selectedClipId.value ?: return@launch
-            val clip = project.value?.tracks
-                ?.flatMap { it.clips }
-                ?.firstOrNull { it.id == clipId } ?: return@launch
+            val clip = selectedClip() ?: return@launch
             repository.splitClipAt(clip, playheadMs)
             refreshPreview()
         }
@@ -105,6 +137,7 @@ class EditorViewModel(
         val outputFile = File(outputDir, "mastar_${snapshot.project.id}_export.mp4")
         exportEngine.export(
             clips = clips,
+            textClips = clipsOfType(ClipType.TEXT),
             outputFile = outputFile,
             canvasWidth = snapshot.project.canvasWidth,
             canvasHeight = snapshot.project.canvasHeight,
@@ -114,6 +147,19 @@ class EditorViewModel(
     fun refreshPreview() {
         previewEngine.setTimeline(mainTrackClips())
     }
+
+    /** Overlay clips (text/stickers) visible at [timelineMs] for the preview. */
+    fun overlaysAt(timelineMs: Long): List<ClipEntity> =
+        allClips().filter {
+            (it.type == ClipType.TEXT || it.type == ClipType.STICKER) &&
+                timelineMs in it.timelineStartMs until it.timelineEndMs
+        }
+
+    private fun allClips(): List<ClipEntity> =
+        project.value?.tracks?.flatMap { it.clips }.orEmpty()
+
+    private fun clipsOfType(type: ClipType): List<ClipEntity> =
+        allClips().filter { it.type == type }
 
     private fun mainTrackClips() = project.value?.tracks
         ?.firstOrNull { it.track.type == TrackType.VIDEO }
@@ -127,6 +173,8 @@ class EditorViewModel(
     }
 
     companion object {
+        const val DEFAULT_OVERLAY_DURATION_MS = 3000L
+
         fun factory(application: Application, projectId: Long) =
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")

@@ -53,6 +53,17 @@ app/src/main/assets/transitions/   MIT-licensed gl-transitions shaders (offline)
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full engineering map
 and the phase-by-phase roadmap.
 
+## 📲 Install on your phone
+
+**[⬇️ Download mastar-v0.1.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.1.0.apk)** (~25 MB)
+
+1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
+2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
+3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
+
+> v0.1.0 is a debug-signed build for testing. Filters, text, stickers, speed,
+> split/trim, and MP4 export all run fully offline.
+
 ## Building
 
 ```bash
