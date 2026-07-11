@@ -9,7 +9,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -39,9 +42,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
+import com.mastar.editor.data.db.ClipType
+import com.mastar.editor.data.db.KeyframeProperty
+import com.mastar.editor.engine.effects.TextPayload
 import androidx.media3.ui.PlayerView
 import com.mastar.editor.ui.timeline.TimelineActions
 import com.mastar.editor.ui.timeline.TimelineView
@@ -198,18 +205,31 @@ fun EditorScreen(
             )
             PreviewOverlays(viewModel, timelineState.playheadMs)
 
-            // Selected PIP clip: bordered box, draggable to reposition.
+            // Selected visual clip: bordered box — drag to move, pinch to
+            // resize, right in the preview. Auto-keys when diamonds exist.
             val selectedId = selectedClipId
-            if (selectedId != null && viewModel.isOverlayClip(selectedId)) {
-                viewModel.clipById(selectedId)?.let { pip ->
-                    PipPlacementBox(
-                        positionX = pip.positionX,
-                        positionY = pip.positionY,
-                        scale = pip.scale,
-                        onCommit = { x, y ->
-                            viewModel.updateClip(selectedId) {
-                                it.copy(positionX = x, positionY = y)
-                            }
+            val selectedForGesture = selectedId?.let { viewModel.clipById(it) }
+            if (selectedForGesture != null &&
+                (selectedForGesture.type == ClipType.VIDEO ||
+                    selectedForGesture.type == ClipType.IMAGE)
+            ) {
+                val values = viewModel.transformValuesAt(
+                    selectedForGesture.id, timelineState.playheadMs
+                )
+                if (values != null) {
+                    TransformGestureBox(
+                        positionX = values.positionX,
+                        positionY = values.positionY,
+                        scale = values.scale,
+                        onCommit = { x, y, sc ->
+                            viewModel.setClipTransform(
+                                selectedForGesture.id, timelineState.playheadMs,
+                                mapOf(
+                                    KeyframeProperty.POSITION_X to x,
+                                    KeyframeProperty.POSITION_Y to y,
+                                    KeyframeProperty.SCALE to sc,
+                                ),
+                            )
                         },
                     )
                 }
@@ -282,6 +302,7 @@ fun EditorScreen(
 
         BottomToolBar(
             hasSelection = selectedClipId != null,
+            selectedClipType = viewModel.selectedClip()?.type,
             activeTool = activeTool,
             onTool = { tool ->
                 when (tool) {
@@ -332,6 +353,28 @@ fun EditorScreen(
             },
             onDismiss = { activeTool = null },
         )
+        EditorTool.EDIT_TEXT -> {
+            val textClip = viewModel.selectedClip()
+            if (textClip?.type == ClipType.TEXT) {
+                AddTextDialog(
+                    initial = TextPayload.fromPayload(textClip.payload),
+                    onConfirm = { payload ->
+                        viewModel.updateClip(textClip.id) { it.copy(payload = payload.toJson()) }
+                        activeTool = null
+                    },
+                    onDismiss = { activeTool = null },
+                )
+            } else {
+                activeTool = null
+            }
+        }
+        EditorTool.FILTER_LAYER -> FilterLayerPicker(
+            onPick = { filterId ->
+                viewModel.addFilterLayer(filterId, timelineState.playheadMs)
+                activeTool = null
+            },
+            onDismiss = { activeTool = null },
+        )
         EditorTool.STICKER -> StickerPicker(
             onPick = { asset ->
                 viewModel.addStickerClip(asset, timelineState.playheadMs)
@@ -343,25 +386,61 @@ fun EditorScreen(
     }
 }
 
+/** Filter layer chooser: the layer grades everything under it. */
+@Composable
+private fun FilterLayerPicker(onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Filter layer") },
+        text = {
+            Column {
+                Text(
+                    "Applies to everything below it for its time range — trim/drag the clip to set the range.",
+                    fontSize = 11.sp,
+                )
+                com.mastar.editor.engine.effects.FilterLibrary.FILTERS.forEach { f ->
+                    TextButton(onClick = { onPick(f.id) }) {
+                        Text("${f.displayName}  ·  ${f.category}")
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
 /**
  * Bordered, draggable placement box for the selected PIP clip — drag it
  * around the preview to position the layer (commits on release).
  */
 @Composable
-private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.PipPlacementBox(
+private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.TransformGestureBox(
     positionX: Float,
     positionY: Float,
     scale: Float,
-    onCommit: (x: Float, y: Float) -> Unit,
+    onCommit: (x: Float, y: Float, scale: Float) -> Unit,
 ) {
     val density = LocalDensity.current
     val widthPx = with(density) { maxWidth.toPx() }
     val heightPx = with(density) { maxHeight.toPx() }
-    var dragOffset by remember(positionX, positionY) { mutableStateOf(Offset.Zero) }
+    var dragOffset by remember(positionX, positionY, scale) { mutableStateOf(Offset.Zero) }
+    var zoomFactor by remember(positionX, positionY, scale) { mutableStateOf(1f) }
 
-    val boxSizePx = (minOf(widthPx, heightPx) * scale).coerceAtLeast(48f)
+    val liveScale = (scale * zoomFactor).coerceIn(0.1f, 3f)
+    val boxSizePx = (minOf(widthPx, heightPx) * liveScale).coerceAtLeast(56f)
     val centerX = positionX * widthPx + dragOffset.x
     val centerY = positionY * heightPx + dragOffset.y
+
+    fun commit() {
+        onCommit(
+            ((positionX * widthPx + dragOffset.x) / widthPx).coerceIn(0f, 1f),
+            ((positionY * heightPx + dragOffset.y) / heightPx).coerceIn(0f, 1f),
+            liveScale,
+        )
+        dragOffset = Offset.Zero
+        zoomFactor = 1f
+    }
 
     Box(
         Modifier
@@ -373,21 +452,21 @@ private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.PipPlacem
             }
             .size(with(density) { boxSizePx.toDp() })
             .border(1.5.dp, Color.White.copy(alpha = 0.9f))
-            .pointerInput(positionX, positionY) {
-                detectDragGestures(
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        dragOffset += dragAmount
-                    },
-                    onDragEnd = {
-                        onCommit(
-                            ((positionX * widthPx + dragOffset.x) / widthPx).coerceIn(0f, 1f),
-                            ((positionY * heightPx + dragOffset.y) / heightPx).coerceIn(0f, 1f),
-                        )
-                        dragOffset = Offset.Zero
-                    },
-                    onDragCancel = { dragOffset = Offset.Zero },
-                )
+            .pointerInput(positionX, positionY, scale) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val zoom = event.calculateZoom()
+                        val pan = event.calculatePan()
+                        if (zoom != 1f || pan != Offset.Zero) {
+                            zoomFactor *= zoom
+                            dragOffset += pan
+                            event.changes.forEach { it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                    commit()
+                }
             },
     )
 }

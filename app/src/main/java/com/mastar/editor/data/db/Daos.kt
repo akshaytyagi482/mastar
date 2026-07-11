@@ -117,6 +117,9 @@ interface KeyframeDao {
     @Insert
     suspend fun insertKeyframe(keyframe: KeyframeEntity): Long
 
+    @Update
+    suspend fun updateKeyframe(keyframe: KeyframeEntity)
+
     @Query("SELECT * FROM keyframes WHERE clipId = :clipId ORDER BY timeMs")
     suspend fun keyframesForClip(clipId: Long): List<KeyframeEntity>
 

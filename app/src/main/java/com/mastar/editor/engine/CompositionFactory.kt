@@ -2,6 +2,7 @@ package com.mastar.editor.engine
 
 import android.content.Context
 import android.net.Uri
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.OverlaySettings
 import androidx.media3.common.VideoCompositorSettings
@@ -22,7 +23,10 @@ import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.data.db.KeyframeEntity
 import com.mastar.editor.engine.audio.Silence
 import com.mastar.editor.engine.effects.EffectResolver
+import com.mastar.editor.engine.effects.ImagePipOverlay
+import com.mastar.editor.engine.effects.TimedFilterLayer
 import com.mastar.editor.engine.effects.TimedTextOverlay
+import com.mastar.editor.engine.effects.Transitions
 import com.mastar.editor.engine.keyframe.KeyframeEngine
 import com.mastar.editor.engine.speed.SpeedCurve
 
@@ -30,9 +34,13 @@ import com.mastar.editor.engine.speed.SpeedCurve
  * Builds the Media3 Composition that BOTH the preview (CompositionPlayer)
  * and the export (Transformer) play. One code path = true WYSIWYG.
  *
- * CompositionPlayer constraints honored here (each was once a black-screen
- * bug): no sequence gaps (real filler media instead) and durationUs set on
- * every item.
+ * Per-item effect chain order (the v0.6 "transform does nothing" fix):
+ *   speed → color (adjust/filter/opacity) → Presentation (canvas fit)
+ *   → transform matrix (position/scale/rotation, keyframable)
+ *   → transition ramps
+ *
+ * CompositionPlayer constraints honored (each was once a black-screen bug):
+ * no sequence gaps (real filler media) and durationUs on every item.
  */
 @UnstableApi
 object CompositionFactory {
@@ -43,14 +51,13 @@ object CompositionFactory {
         val overlayClips: List<ClipEntity>,
         val audioClips: List<ClipEntity>,
         val textClips: List<ClipEntity>,
+        val filterClips: List<ClipEntity> = emptyList(),
         /** Keyframe diamonds per clip id (animates transform/opacity). */
         val keyframesByClip: Map<Long, List<KeyframeEntity>> = emptyMap(),
     )
 
     private const val GAP_IMAGE_URI = "asset:///gap_black.png"
-
-    /** Half the transition plays on each side of the cut. */
-    private const val MIN_TRANSITION_WINDOW_US = 100_000L
+    private const val MIN_TRANSITION_WINDOW_US = 200_000L
 
     fun build(
         context: Context,
@@ -65,23 +72,25 @@ object CompositionFactory {
             layers.videoClips.sortedBy { it.timelineStartMs },
             layers.keyframesByClip,
             outWidth, outHeight,
-            includeTransform = true,
-            muteAll = false,
+            isPipLane = false,
             withTransitions = true,
         )
 
-        val overlayClips =
+        // Photo PIP renders via composition-level overlays (single-input
+        // safe); only VIDEO PIP needs the multi-input compositor.
+        val allOverlayClips =
             if (includeOverlayTrack) layers.overlayClips.sortedBy { it.timelineStartMs }
             else emptyList()
+        val videoPipClips = allOverlayClips.filter { it.type == ClipType.VIDEO }
+        val imagePipClips = allOverlayClips.filter { it.type == ClipType.IMAGE }
 
         val sequences = buildList {
             add(mainSequence)
-            if (overlayClips.isNotEmpty()) {
+            if (videoPipClips.isNotEmpty()) {
                 add(
                     videoSequence(
-                        overlayClips, layers.keyframesByClip, outWidth, outHeight,
-                        includeTransform = false,
-                        muteAll = true,
+                        videoPipClips, layers.keyframesByClip, outWidth, outHeight,
+                        isPipLane = true,
                         withTransitions = false,
                     )
                 )
@@ -93,18 +102,26 @@ object CompositionFactory {
         val textPxPerSp = minOf(outWidth, outHeight) / 360f
 
         return Composition.Builder(sequences)
-            .setEffects(compositionEffects(layers.textClips, textPxPerSp))
+            .setEffects(
+                compositionEffects(
+                    context, layers, imagePipClips, textPxPerSp,
+                    minOf(outWidth, outHeight),
+                )
+            )
             .setVideoCompositorSettings(
-                PipCompositorSettings(overlayClips, layers.keyframesByClip)
+                PipCompositorSettings(videoPipClips, layers.keyframesByClip)
             )
             .build()
     }
 
+    /** True when the composition needs the multi-input video graph. */
+    fun needsMultipleInputs(layers: Layers): Boolean =
+        layers.overlayClips.any { it.type == ClipType.VIDEO }
+
     /**
-     * Maps each overlay clip's (possibly keyframed) position/scale/opacity
-     * onto the compositor. Presentation time is absolute composition time.
-     * Gap-filler frames between overlay clips miss the lookup and render
-     * fully transparent.
+     * Maps each VIDEO overlay clip's (possibly keyframed) placement onto the
+     * compositor. Presentation time is absolute composition time. Gap-filler
+     * frames between overlay clips miss the lookup → fully transparent.
      */
     private class PipCompositorSettings(
         private val overlayClips: List<ClipEntity>,
@@ -128,7 +145,6 @@ object CompositionFactory {
                 clip.rotationDeg, clip.opacity, clip.volume,
             )
 
-            // positionX/Y are 0..1 (top-left origin); NDC anchors are -1..1, y-up.
             val ndcX = t.positionX * 2f - 1f
             val ndcY = -(t.positionY * 2f - 1f)
             return StaticOverlaySettings.Builder()
@@ -147,8 +163,7 @@ object CompositionFactory {
         keyframesByClip: Map<Long, List<KeyframeEntity>>,
         outWidth: Int,
         outHeight: Int,
-        includeTransform: Boolean,
-        muteAll: Boolean,
+        isPipLane: Boolean,
         withTransitions: Boolean,
     ): EditedMediaItemSequence {
         val builder = EditedMediaItemSequence.Builder()
@@ -160,26 +175,25 @@ object CompositionFactory {
             val prev = if (withTransitions) clips.getOrNull(index - 1) else null
             val headTransition = prev?.transitionId?.takeIf { prev.transitionDurationMs > 0 }
             val headWindowUs = if (headTransition != null) {
-                (prev.transitionDurationMs * 1000 / 2).coerceAtLeast(MIN_TRANSITION_WINDOW_US)
+                (prev.transitionDurationMs * 1000).coerceAtLeast(MIN_TRANSITION_WINDOW_US)
             } else 0L
             val tailTransition =
-                if (withTransitions && index < clips.lastIndex) {
-                    clip.transitionId?.takeIf { clip.transitionDurationMs > 0 }
-                } else null
+                if (withTransitions) clip.transitionId?.takeIf { clip.transitionDurationMs > 0 }
+                else null
             val tailWindowUs = if (tailTransition != null) {
-                (clip.transitionDurationMs * 1000 / 2).coerceAtLeast(MIN_TRANSITION_WINDOW_US)
+                (clip.transitionDurationMs * 1000).coerceAtLeast(MIN_TRANSITION_WINDOW_US)
             } else 0L
 
-            val renderContext = EffectResolver.RenderContext(
-                keyframes = keyframesByClip[clip.id].orEmpty(),
-                itemDurationUs = clip.timelineDurationMs * 1000,
-                tailTransitionId = tailTransition,
-                tailWindowUs = tailWindowUs,
-                headTransitionId = headTransition,
-                headWindowUs = headWindowUs,
-            )
             builder.addItem(
-                clip.toEditedMediaItem(outWidth, outHeight, includeTransform, muteAll, renderContext)
+                clip.toEditedMediaItem(
+                    outWidth, outHeight,
+                    isPipLane = isPipLane,
+                    keyframes = keyframesByClip[clip.id].orEmpty(),
+                    headTransition = headTransition,
+                    headWindowUs = headWindowUs,
+                    tailTransition = tailTransition,
+                    tailWindowUs = tailWindowUs,
+                )
             )
             cursorMs = clip.timelineEndMs
         }
@@ -251,18 +265,44 @@ object CompositionFactory {
         return builder.build()
     }
 
-    /** Composition-level effects see absolute output time: timed text lives here. */
-    private fun compositionEffects(textClips: List<ClipEntity>, textPxPerSp: Float): Effects {
-        if (textClips.isEmpty()) return Effects.EMPTY
-        val overlays = textClips.mapNotNull { clip ->
-            val payload = clip.payload ?: return@mapNotNull null
-            TimedTextOverlay(payload, clip.timelineStartMs, clip.timelineEndMs, textPxPerSp)
+    /**
+     * Composition-level effects (absolute output time): timed text, photo
+     * PIP overlays, then filter layers grading the fully composited frame.
+     */
+    private fun compositionEffects(
+        context: Context,
+        layers: Layers,
+        imagePipClips: List<ClipEntity>,
+        textPxPerSp: Float,
+        outShortSide: Int,
+    ): Effects {
+        val overlays = buildList<TextureOverlay> {
+            imagePipClips.forEach { clip ->
+                add(
+                    ImagePipOverlay(
+                        context, clip, layers.keyframesByClip[clip.id].orEmpty(), outShortSide
+                    )
+                )
+            }
+            layers.textClips.forEach { clip ->
+                clip.payload?.let { payload ->
+                    add(
+                        TimedTextOverlay(
+                            payload, clip.timelineStartMs, clip.timelineEndMs, textPxPerSp
+                        )
+                    )
+                }
+            }
         }
-        if (overlays.isEmpty()) return Effects.EMPTY
-        return Effects(
-            emptyList(),
-            listOf(OverlayEffect(ImmutableList.copyOf<TextureOverlay>(overlays))),
-        )
+
+        val videoEffects = buildList<Effect> {
+            if (overlays.isNotEmpty()) add(OverlayEffect(ImmutableList.copyOf(overlays)))
+            layers.filterClips.forEach { clip ->
+                TimedFilterLayer.effectFor(clip)?.let { add(it) }
+            }
+        }
+        if (videoEffects.isEmpty()) return Effects.EMPTY
+        return Effects(emptyList(), videoEffects)
     }
 
     /** durationUs is the duration BEFORE clipping (the full source file). */
@@ -272,9 +312,12 @@ object CompositionFactory {
     private fun ClipEntity.toEditedMediaItem(
         outWidth: Int,
         outHeight: Int,
-        includeTransform: Boolean,
-        muteAudio: Boolean,
-        renderContext: EffectResolver.RenderContext,
+        isPipLane: Boolean,
+        keyframes: List<KeyframeEntity>,
+        headTransition: String?,
+        headWindowUs: Long,
+        tailTransition: String?,
+        tailWindowUs: Long,
     ): EditedMediaItem {
         val isImage = type == ClipType.IMAGE
 
@@ -291,7 +334,10 @@ object CompositionFactory {
         }
 
         val curve = SpeedCurve.parse(speedCurveJson)
+        val itemDurationUs = timelineDurationMs * 1000
+
         val videoEffects = buildList {
+            // Speed first: downstream effect timestamps are output-time.
             if (!isImage) {
                 if (curve != null) {
                     add(SpeedChangeEffect(curve.toSpeedProvider(sourceEndMs - sourceStartMs)))
@@ -299,19 +345,27 @@ object CompositionFactory {
                     add(SpeedChangeEffect(speed))
                 }
             }
-            addAll(
-                EffectResolver.videoEffectsFor(
-                    this@toEditedMediaItem, includeTransform, renderContext
-                )
-            )
+            addAll(EffectResolver.colorEffectsFor(this@toEditedMediaItem, keyframes))
             add(
                 Presentation.createForWidthAndHeight(
                     outWidth, outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
                 )
             )
+            // Transform AFTER the canvas fit so it's actually visible.
+            // PIP lanes get their placement from the compositor instead.
+            if (!isPipLane) {
+                EffectResolver.transformEffectFor(this@toEditedMediaItem, keyframes)
+                    ?.let { add(it) }
+            }
+            if (headTransition != null && headWindowUs > 0) {
+                addAll(Transitions.inEffects(headTransition, headWindowUs))
+            }
+            if (tailTransition != null && tailWindowUs > 0 && itemDurationUs > 0) {
+                addAll(Transitions.outEffects(tailTransition, itemDurationUs, tailWindowUs))
+            }
         }
 
-        val dropAudio = isImage || muteAudio || muted
+        val dropAudio = isImage || isPipLane || muted
         val builder = EditedMediaItem.Builder(mediaItemBuilder.build())
             .setEffects(
                 Effects(

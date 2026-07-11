@@ -15,7 +15,6 @@ import androidx.media3.effect.HslAdjustment
 import androidx.media3.effect.MatrixTransformation
 import androidx.media3.effect.RgbAdjustment
 import androidx.media3.effect.RgbMatrix
-import androidx.media3.effect.ScaleAndRotateTransformation
 import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.KeyframeEntity
 import com.mastar.editor.data.db.KeyframeProperty
@@ -28,6 +27,10 @@ import com.mastar.editor.engine.speed.SpeedCurve
  * The single source of truth that turns a clip's persisted edit state into
  * Media3 effect chains. Preview (CompositionPlayer) and export (Transformer)
  * both consume this via CompositionFactory — guaranteeing WYSIWYG.
+ *
+ * Chain order matters: COLOR effects run before the canvas Presentation;
+ * the TRANSFORM matrix runs AFTER it (v0.6 ran transform first and the
+ * canvas crop visually cancelled it — the "transform does nothing" bug).
  */
 @UnstableApi
 object EffectResolver {
@@ -41,53 +44,11 @@ object EffectResolver {
         VoiceEffect("echo", "Echo", pitch = 1f, echo = true),
     )
 
-    /** Everything time-varying a clip item needs beyond its static fields. */
-    data class RenderContext(
-        val keyframes: List<KeyframeEntity> = emptyList(),
-        /** Presented duration of this item on the timeline, microseconds. */
-        val itemDurationUs: Long = 0,
-        /** Transition OUT of this clip (applied on its tail). */
-        val tailTransitionId: String? = null,
-        val tailWindowUs: Long = 0,
-        /** Transition INTO this clip (the previous clip's transition). */
-        val headTransitionId: String? = null,
-        val headWindowUs: Long = 0,
-    )
-
-    /**
-     * Per-clip video chain: (keyframed) transform → manual color adjustments
-     * → filter at intensity → opacity → transition ramps.
-     *
-     * [includeTransform] is false for PIP overlay clips, whose placement is
-     * applied by the video compositor instead (flip stays local).
-     */
-    fun videoEffectsFor(
+    /** Pre-canvas color chain: adjustments → filter → opacity. */
+    fun colorEffectsFor(
         clip: ClipEntity,
-        includeTransform: Boolean = true,
-        context: RenderContext = RenderContext(),
+        keyframes: List<KeyframeEntity> = emptyList(),
     ): List<Effect> = buildList {
-        val transformKeyframes = context.keyframes.filter {
-            it.property != KeyframeProperty.VOLUME
-        }
-
-        if (includeTransform && transformKeyframes.isNotEmpty()) {
-            addAll(keyframedTransformEffects(clip, transformKeyframes))
-        } else {
-            // Static transform. Flip is a negative scale.
-            val scaleX = (if (includeTransform) clip.scale else 1f) * (if (clip.flipH) -1f else 1f)
-            val scaleY = (if (includeTransform) clip.scale else 1f) * (if (clip.flipV) -1f else 1f)
-            val rotation = if (includeTransform) clip.rotationDeg else 0f
-            if (scaleX != 1f || scaleY != 1f || rotation != 0f) {
-                add(
-                    ScaleAndRotateTransformation.Builder()
-                        .setScale(scaleX, scaleY)
-                        .setRotationDegrees(rotation)
-                        .build()
-                )
-            }
-        }
-
-        // Manual adjustments (all normalized -1..1 in the DB).
         if (clip.adjustBrightness != 0f) add(Brightness(clip.adjustBrightness * 0.5f))
         if (clip.adjustContrast != 0f) add(Contrast(clip.adjustContrast * 0.6f))
         if (clip.adjustSaturation != 0f || clip.adjustHue != 0f) {
@@ -112,73 +73,68 @@ object EffectResolver {
 
         addAll(FilterLibrary.effectsFor(clip.filterId, clip.filterIntensity))
 
-        if (includeTransform && clip.opacity < 1f &&
-            transformKeyframes.none { it.property == KeyframeProperty.OPACITY }
-        ) {
-            add(AlphaScale(clip.opacity.coerceIn(0f, 1f)))
-        }
-
-        // Transition ramps run last so they act on the final look.
-        if (context.headTransitionId != null && context.headWindowUs > 0) {
-            addAll(Transitions.inEffects(context.headTransitionId, context.headWindowUs))
-        }
-        if (context.tailTransitionId != null &&
-            context.tailWindowUs > 0 && context.itemDurationUs > 0
-        ) {
-            addAll(
-                Transitions.outEffects(
-                    context.tailTransitionId, context.itemDurationUs, context.tailWindowUs
-                )
-            )
-        }
-    }
-
-    /**
-     * Keyframed position/scale/rotation as one per-frame matrix, plus a
-     * per-frame gain ramp for opacity keyframes. Keyframe times are relative
-     * to the clip's start — exactly the item-local effect timestamps.
-     */
-    private fun keyframedTransformEffects(
-        clip: ClipEntity,
-        keyframes: List<KeyframeEntity>,
-    ): List<Effect> {
-        val byProperty = keyframes.groupBy { it.property }
-        val flipX = if (clip.flipH) -1f else 1f
-        val flipY = if (clip.flipV) -1f else 1f
-
-        val effects = mutableListOf<Effect>(
-            MatrixTransformation { presentationTimeUs ->
-                val t = KeyframeEngine.transformAt(
-                    byProperty, presentationTimeUs / 1000,
-                    clip.positionX, clip.positionY, clip.scale,
-                    clip.rotationDeg, clip.opacity, clip.volume,
-                )
-                Matrix().apply {
-                    postScale(t.scale * flipX, t.scale * flipY)
-                    postRotate(-t.rotationDeg)
-                    // positionX/Y are 0..1 top-left origin; NDC is -1..1 y-up.
-                    postTranslate((t.positionX - 0.5f) * 2f, -(t.positionY - 0.5f) * 2f)
-                }
-            }
-        )
-
-        if (byProperty.containsKey(KeyframeProperty.OPACITY)) {
-            val opacityKfs = byProperty[KeyframeProperty.OPACITY].orEmpty()
-            effects.add(
+        val opacityKfs = keyframes.filter { it.property == KeyframeProperty.OPACITY }
+        if (opacityKfs.isNotEmpty()) {
+            val gain = FloatArray(16)
+            add(
                 RgbMatrix { presentationTimeUs, _ ->
                     val o = KeyframeEngine.valueAt(
                         opacityKfs, presentationTimeUs / 1000, clip.opacity
                     ).coerceIn(0f, 1f)
-                    floatArrayOf(
-                        o, 0f, 0f, 0f,
-                        0f, o, 0f, 0f,
-                        0f, 0f, o, 0f,
-                        0f, 0f, 0f, 1f,
-                    )
+                    gain.fill(0f)
+                    gain[0] = o; gain[5] = o; gain[10] = o; gain[15] = 1f
+                    gain
                 }
             )
+        } else if (clip.opacity < 1f) {
+            add(AlphaScale(clip.opacity.coerceIn(0f, 1f)))
         }
-        return effects
+    }
+
+    /**
+     * Post-canvas transform: position + scale + rotation + flip as one
+     * NDC matrix, animated when transform keyframes exist. The Matrix
+     * instance is reused per frame — no per-frame allocation.
+     */
+    fun transformEffectFor(
+        clip: ClipEntity,
+        keyframes: List<KeyframeEntity> = emptyList(),
+    ): Effect? {
+        val transformKfs = keyframes.filter {
+            it.property == KeyframeProperty.POSITION_X ||
+                it.property == KeyframeProperty.POSITION_Y ||
+                it.property == KeyframeProperty.SCALE ||
+                it.property == KeyframeProperty.ROTATION
+        }
+        val flipX = if (clip.flipH) -1f else 1f
+        val flipY = if (clip.flipV) -1f else 1f
+
+        if (transformKfs.isEmpty()) {
+            val isIdentity = clip.positionX == 0.5f && clip.positionY == 0.5f &&
+                clip.scale == 1f && clip.rotationDeg == 0f && !clip.flipH && !clip.flipV
+            if (isIdentity) return null
+            val matrix = Matrix().apply {
+                postScale(clip.scale * flipX, clip.scale * flipY)
+                postRotate(-clip.rotationDeg)
+                postTranslate((clip.positionX - 0.5f) * 2f, -(clip.positionY - 0.5f) * 2f)
+            }
+            return MatrixTransformation { matrix }
+        }
+
+        val byProperty = transformKfs.groupBy { it.property }
+        val matrix = Matrix()
+        return MatrixTransformation { presentationTimeUs ->
+            val t = KeyframeEngine.transformAt(
+                byProperty, presentationTimeUs / 1000,
+                clip.positionX, clip.positionY, clip.scale,
+                clip.rotationDeg, clip.opacity, clip.volume,
+            )
+            matrix.reset()
+            matrix.postScale(t.scale * flipX, t.scale * flipY)
+            matrix.postRotate(-t.rotationDeg)
+            matrix.postTranslate((t.positionX - 0.5f) * 2f, -(t.positionY - 0.5f) * 2f)
+            matrix
+        }
     }
 
     /**

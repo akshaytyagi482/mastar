@@ -87,6 +87,8 @@ import com.airbnb.lottie.compose.LottieConstants
 import com.airbnb.lottie.compose.rememberLottieComposition
 import com.mastar.editor.R
 import com.mastar.editor.data.db.ClipType
+import com.mastar.editor.data.db.EasingType
+import com.mastar.editor.data.db.KeyframeProperty
 import com.mastar.editor.engine.effects.EffectResolver
 import com.mastar.editor.engine.effects.FilterLibrary
 import com.mastar.editor.engine.effects.TextPayload
@@ -109,6 +111,8 @@ enum class EditorTool(
     EXTRACT(Icons.Default.GraphicEq, "Extract", false),
     TEXT(Icons.Default.TextFields, "Text", false),
     STICKER(Icons.Default.EmojiEmotions, "Sticker", false),
+    FILTER_LAYER(Icons.Default.Tune, "Filter", false),
+    EDIT_TEXT(Icons.Default.TextFields, "Edit", true),
     SPLIT(Icons.Default.ContentCut, "Split", true),
     DUPLICATE(Icons.Default.ContentCopy, "Copy", true),
     SPEED(Icons.Default.Speed, "Speed", true),
@@ -125,12 +129,18 @@ enum class EditorTool(
 
 private val ROOT_TOOLS = listOf(
     EditorTool.ADD_CLIP, EditorTool.PHOTO, EditorTool.PIP, EditorTool.AUDIO,
-    EditorTool.EXTRACT, EditorTool.TEXT, EditorTool.STICKER,
+    EditorTool.EXTRACT, EditorTool.TEXT, EditorTool.STICKER, EditorTool.FILTER_LAYER,
 )
 private val CLIP_TOOLS = listOf(
     EditorTool.SPLIT, EditorTool.DUPLICATE, EditorTool.SPEED, EditorTool.VOLUME,
     EditorTool.VOICE, EditorTool.FILTER, EditorTool.ADJUST, EditorTool.TRANSFORM,
     EditorTool.KEYFRAME, EditorTool.FREEZE, EditorTool.TRANSITION, EditorTool.DELETE,
+)
+private val TEXT_TOOLS = listOf(
+    EditorTool.EDIT_TEXT, EditorTool.DUPLICATE, EditorTool.KEYFRAME, EditorTool.DELETE,
+)
+private val FILTER_LAYER_TOOLS = listOf(
+    EditorTool.FILTER, EditorTool.DUPLICATE, EditorTool.DELETE,
 )
 
 /** CapCut-style aspect presets. */
@@ -336,10 +346,16 @@ private fun formatClock(ms: Long): String {
 @Composable
 fun BottomToolBar(
     hasSelection: Boolean,
+    selectedClipType: ClipType?,
     activeTool: EditorTool?,
     onTool: (EditorTool) -> Unit,
 ) {
-    val tools = if (hasSelection) CLIP_TOOLS else ROOT_TOOLS
+    val tools = when {
+        !hasSelection -> ROOT_TOOLS
+        selectedClipType == ClipType.TEXT || selectedClipType == ClipType.STICKER -> TEXT_TOOLS
+        selectedClipType == ClipType.FILTER -> FILTER_LAYER_TOOLS
+        else -> CLIP_TOOLS
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -459,8 +475,10 @@ fun ToolPanel(
             EditorTool.KEYFRAME -> {
                 val allKeyframes by viewModel.keyframes.collectAsState()
                 val clipKeyframes = allKeyframes.filter { it.clipId == clip.id }
+                var selectedDiamond by remember(clip.id) { mutableStateOf<Long?>(null) }
                 Text(
-                    "Diamonds animate position, scale, rotation and opacity between points.",
+                    "Add a diamond, move the playhead, change Transform — it " +
+                        "auto-keys the next diamond. Tap a diamond to set its curve.",
                     color = Color.White.copy(alpha = 0.6f),
                     fontSize = 10.sp,
                 )
@@ -476,11 +494,41 @@ fun ToolPanel(
                     ) {
                         clipKeyframes.map { it.timeMs }.distinct().sorted().forEach { t ->
                             FilterChip(
-                                selected = false,
-                                onClick = { viewModel.removeKeyframesAt(t) },
-                                label = { Text("◆ %.1fs ✕".format(t / 1000f)) },
+                                selected = selectedDiamond == t,
+                                onClick = {
+                                    selectedDiamond = if (selectedDiamond == t) null else t
+                                },
+                                label = { Text("◆ %.1fs".format(t / 1000f)) },
                             )
                         }
+                    }
+                }
+                selectedDiamond?.let { t ->
+                    val easingAt = clipKeyframes.firstOrNull { it.timeMs == t }?.easing
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Curve", color = Color.White, fontSize = 11.sp)
+                        listOf(
+                            EasingType.LINEAR to "Linear",
+                            EasingType.EASE_IN to "Ease in",
+                            EasingType.EASE_OUT to "Ease out",
+                            EasingType.EASE_IN_OUT to "Smooth",
+                        ).forEach { (easing, label) ->
+                            FilterChip(
+                                selected = easingAt == easing,
+                                onClick = { viewModel.setKeyframeEasing(t, easing) },
+                                label = { Text(label) },
+                            )
+                        }
+                        TextButton(onClick = {
+                            viewModel.removeKeyframesAt(t)
+                            selectedDiamond = null
+                        }) { Text("Delete ✕", color = Color(0xFFFF5252)) }
                     }
                 }
             }
@@ -561,11 +609,25 @@ fun ToolPanel(
                 }
             }
             EditorTool.TRANSFORM -> {
+                // Values read AT the playhead (keyframe-aware); commits go
+                // through setClipTransform, which auto-keys when diamonds
+                // exist — CapCut behavior.
+                val hasKeyframes = viewModel.keyframesFor(clip.id).isNotEmpty()
+                val current = viewModel.transformValuesAt(clip.id, playheadMs)
+                if (hasKeyframes) {
+                    Text(
+                        "◆ Auto-keyframing: edits drop a diamond at the playhead",
+                        color = Saffron,
+                        fontSize = 10.sp,
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = {
-                        viewModel.updateClip(clip.id) {
-                            it.copy(rotationDeg = (it.rotationDeg + 90f) % 360f)
-                        }
+                        val rot = (current?.rotationDeg ?: clip.rotationDeg) + 90f
+                        viewModel.setClipTransform(
+                            clip.id, playheadMs,
+                            mapOf(KeyframeProperty.ROTATION to rot % 360f),
+                        )
                     }) {
                         Icon(
                             Icons.Default.Rotate90DegreesCw,
@@ -573,7 +635,10 @@ fun ToolPanel(
                             tint = Color.White,
                         )
                     }
-                    Text("${clip.rotationDeg.toInt()}°", color = Color.White, fontSize = 12.sp)
+                    Text(
+                        "${(current?.rotationDeg ?: clip.rotationDeg).toInt()}°",
+                        color = Color.White, fontSize = 12.sp,
+                    )
                     Spacer(Modifier.width(14.dp))
                     Icon(Icons.Default.Flip, contentDescription = null, tint = Color.White)
                     Text(" Flip H", color = Color.White, fontSize = 12.sp)
@@ -591,41 +656,62 @@ fun ToolPanel(
                         },
                     )
                 }
-                var scale by remember(clip.id) { mutableFloatStateOf(clip.scale) }
+                var scale by remember(clip.id, playheadMs, hasKeyframes) {
+                    mutableFloatStateOf(current?.scale ?: clip.scale)
+                }
                 PanelSlider(
                     label = "Scale ${(scale * 100).toInt()}%",
                     value = scale,
-                    range = 0.25f..2f,
+                    range = 0.1f..3f,
                     onValue = { scale = it },
-                    onCommit = { viewModel.updateClip(clip.id) { it.copy(scale = scale) } },
+                    onCommit = {
+                        viewModel.setClipTransform(
+                            clip.id, playheadMs, mapOf(KeyframeProperty.SCALE to scale)
+                        )
+                    },
                 )
-                var opacity by remember(clip.id) { mutableFloatStateOf(clip.opacity) }
+                var opacity by remember(clip.id, playheadMs, hasKeyframes) {
+                    mutableFloatStateOf(current?.opacity ?: clip.opacity)
+                }
                 PanelSlider(
                     label = "Opacity ${(opacity * 100).toInt()}%",
                     value = opacity,
                     range = 0f..1f,
                     onValue = { opacity = it },
-                    onCommit = { viewModel.updateClip(clip.id) { it.copy(opacity = opacity) } },
+                    onCommit = {
+                        viewModel.setClipTransform(
+                            clip.id, playheadMs, mapOf(KeyframeProperty.OPACITY to opacity)
+                        )
+                    },
                 )
-                // PIP layers can also be positioned on the canvas.
-                if (viewModel.isOverlayClip(clip.id)) {
-                    var posX by remember(clip.id) { mutableFloatStateOf(clip.positionX) }
-                    PanelSlider(
-                        label = "Position X",
-                        value = posX,
-                        range = 0f..1f,
-                        onValue = { posX = it },
-                        onCommit = { viewModel.updateClip(clip.id) { it.copy(positionX = posX) } },
-                    )
-                    var posY by remember(clip.id) { mutableFloatStateOf(clip.positionY) }
-                    PanelSlider(
-                        label = "Position Y",
-                        value = posY,
-                        range = 0f..1f,
-                        onValue = { posY = it },
-                        onCommit = { viewModel.updateClip(clip.id) { it.copy(positionY = posY) } },
-                    )
+                var posX by remember(clip.id, playheadMs, hasKeyframes) {
+                    mutableFloatStateOf(current?.positionX ?: clip.positionX)
                 }
+                PanelSlider(
+                    label = "Position X",
+                    value = posX,
+                    range = 0f..1f,
+                    onValue = { posX = it },
+                    onCommit = {
+                        viewModel.setClipTransform(
+                            clip.id, playheadMs, mapOf(KeyframeProperty.POSITION_X to posX)
+                        )
+                    },
+                )
+                var posY by remember(clip.id, playheadMs, hasKeyframes) {
+                    mutableFloatStateOf(current?.positionY ?: clip.positionY)
+                }
+                PanelSlider(
+                    label = "Position Y",
+                    value = posY,
+                    range = 0f..1f,
+                    onValue = { posY = it },
+                    onCommit = {
+                        viewModel.setClipTransform(
+                            clip.id, playheadMs, mapOf(KeyframeProperty.POSITION_Y to posY)
+                        )
+                    },
+                )
             }
             EditorTool.TRANSITION -> ChipRow(
                 options = TRANSITIONS,
@@ -634,7 +720,8 @@ fun ToolPanel(
                     viewModel.updateClip(clip.id) {
                         it.copy(
                             transitionId = id,
-                            transitionDurationMs = if (id == null) 0 else 500,
+                            transitionDurationMs =
+                                if (id == null) 0 else Transitions.DEFAULT_DURATION_MS,
                         )
                     }
                 },
@@ -879,13 +966,17 @@ private fun composeFont(font: String): FontFamily = when (font) {
 
 /** Styled text editor: content, color, size, weight, font, background. */
 @Composable
-fun AddTextDialog(onConfirm: (TextPayload) -> Unit, onDismiss: () -> Unit) {
-    var text by remember { mutableStateOf("") }
-    var color by remember { mutableStateOf(TextPayload.COLORS.first()) }
-    var sizeSp by remember { mutableFloatStateOf(28f) }
-    var bold by remember { mutableStateOf(false) }
-    var background by remember { mutableStateOf(false) }
-    var font by remember { mutableStateOf("sans") }
+fun AddTextDialog(
+    onConfirm: (TextPayload) -> Unit,
+    onDismiss: () -> Unit,
+    initial: TextPayload? = null,
+) {
+    var text by remember { mutableStateOf(initial?.text ?: "") }
+    var color by remember { mutableStateOf(initial?.color ?: TextPayload.COLORS.first()) }
+    var sizeSp by remember { mutableFloatStateOf(initial?.sizeSp?.toFloat() ?: 28f) }
+    var bold by remember { mutableStateOf(initial?.bold ?: false) }
+    var background by remember { mutableStateOf(initial?.background ?: false) }
+    var font by remember { mutableStateOf(initial?.font ?: "sans") }
 
     AlertDialog(
         onDismissRequest = onDismiss,

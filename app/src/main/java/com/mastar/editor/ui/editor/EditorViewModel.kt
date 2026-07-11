@@ -116,6 +116,7 @@ class EditorViewModel(
             overlayClips = clipsOf(TrackType.OVERLAY),
             audioClips = clipsOf(TrackType.AUDIO),
             textClips = clipsOf(TrackType.TEXT),
+            filterClips = clipsOf(TrackType.FILTER),
             keyframesByClip = kfs.groupBy { it.clipId },
         )
     }
@@ -441,6 +442,85 @@ class EditorViewModel(
             keyframesForSelected()
                 .filter { it.timeMs == timeMs }
                 .forEach { repository.deleteKeyframe(it.id) }
+        }
+    }
+
+    /** Sets the interpolation curve leaving the diamond at [timeMs]. */
+    fun setKeyframeEasing(timeMs: Long, easing: EasingType) {
+        viewModelScope.launch {
+            keyframesForSelected()
+                .filter { it.timeMs == timeMs }
+                .forEach { repository.updateKeyframe(it.copy(easing = easing)) }
+        }
+    }
+
+    /**
+     * CapCut auto-keying: when the clip already has keyframes, changing a
+     * transform value WRITES a diamond at the playhead instead of (silently
+     * ignored) static fields. Without keyframes it stays a static edit.
+     */
+    fun setClipTransform(
+        clipId: Long,
+        playheadMs: Long,
+        values: Map<KeyframeProperty, Float>,
+    ) {
+        viewModelScope.launch {
+            val clip = clipById(clipId) ?: return@launch
+            if (clip.locked) return@launch
+            val existing = keyframesFor(clipId)
+            if (existing.isEmpty()) {
+                snapshotForUndo()
+                repository.updateClip(
+                    clip.copy(
+                        positionX = values[KeyframeProperty.POSITION_X] ?: clip.positionX,
+                        positionY = values[KeyframeProperty.POSITION_Y] ?: clip.positionY,
+                        scale = values[KeyframeProperty.SCALE] ?: clip.scale,
+                        rotationDeg = values[KeyframeProperty.ROTATION] ?: clip.rotationDeg,
+                        opacity = values[KeyframeProperty.OPACITY] ?: clip.opacity,
+                    )
+                )
+            } else {
+                val timeMs = (playheadMs - clip.timelineStartMs)
+                    .coerceIn(0, clip.timelineDurationMs)
+                for ((property, value) in values) {
+                    existing.firstOrNull { it.property == property && it.timeMs == timeMs }
+                        ?.let { repository.deleteKeyframe(it.id) }
+                    repository.addKeyframe(
+                        KeyframeEntity(
+                            clipId = clipId,
+                            property = property,
+                            timeMs = timeMs,
+                            value = value,
+                            easing = EasingType.EASE_IN_OUT,
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** Transform values at the playhead (keyframe-aware) for panel display. */
+    fun transformValuesAt(clipId: Long, playheadMs: Long): KeyframeEngine.Transform? {
+        val clip = clipById(clipId) ?: return null
+        val kfs = keyframesFor(clipId).groupBy { it.property }
+        return KeyframeEngine.transformAt(
+            kfs, (playheadMs - clip.timelineStartMs).coerceIn(0, clip.timelineDurationMs),
+            clip.positionX, clip.positionY, clip.scale,
+            clip.rotationDeg, clip.opacity, clip.volume,
+        )
+    }
+
+    /** CapCut-style filter LAYER: grades everything under it for its range. */
+    fun addFilterLayer(filterId: String, atMs: Long) {
+        viewModelScope.launch {
+            snapshotForUndo()
+            val trackId = repository.ensureTrack(projectId, TrackType.FILTER)
+            repository.addFilterLayerClip(
+                trackId = trackId,
+                filterId = filterId,
+                timelineStartMs = atMs,
+                durationMs = DEFAULT_OVERLAY_DURATION_MS,
+            )
         }
     }
 

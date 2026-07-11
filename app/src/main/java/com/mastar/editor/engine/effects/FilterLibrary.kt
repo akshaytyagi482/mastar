@@ -114,5 +114,41 @@ object FilterLibrary {
         }
     }
 
+    /**
+     * A 4x4 RGBA color-matrix approximation of a recipe (column-major, as
+     * RgbMatrix expects) — used by time-windowed FILTER LAYERS, which run at
+     * composition level where per-item HSL effects can't reach. Covers rgb
+     * scales, saturation (Rec.709 luma) and brightness; hue/contrast terms
+     * are dropped in layer mode.
+     */
+    fun colorMatrixFor(filterId: String?, intensity: Float): FloatArray? {
+        val recipe = RECIPES[filterId] ?: return null
+        val i = intensity.coerceIn(0f, 1f)
+        if (i == 0f) return null
+
+        val satPercent = if (recipe.grayscale) -100f * i else recipe.saturation * i
+        val s = (1f + satPercent / 100f).coerceAtLeast(0f)
+        val lr = 0.2126f * (1f - s)
+        val lg = 0.7152f * (1f - s)
+        val lb = 0.0722f * (1f - s)
+
+        val bright = 1f + recipe.brightness * i
+        val rScale = lerp(1f, recipe.red, i) * bright
+        val gScale = lerp(1f, recipe.green, i) * bright
+        val bScale = lerp(1f, recipe.blue, i) * bright
+
+        val m = FloatArray(16)
+        fun set(row: Int, col: Int, v: Float) {
+            m[col * 4 + row] = v
+        }
+        // Row 0 (R out), row 1 (G out), row 2 (B out): saturation matrix
+        // scaled per output channel; row 3 = alpha passthrough.
+        set(0, 0, (lr + s) * rScale); set(0, 1, lg * rScale); set(0, 2, lb * rScale)
+        set(1, 0, lr * gScale); set(1, 1, (lg + s) * gScale); set(1, 2, lb * gScale)
+        set(2, 0, lr * bScale); set(2, 1, lg * bScale); set(2, 2, (lb + s) * bScale)
+        set(3, 3, 1f)
+        return m
+    }
+
     private fun lerp(from: Float, to: Float, t: Float) = from + (to - from) * t
 }

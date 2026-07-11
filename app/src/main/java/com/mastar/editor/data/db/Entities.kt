@@ -22,7 +22,7 @@ data class ProjectEntity(
     val frameRate: Int = 30,
 )
 
-enum class TrackType { VIDEO, AUDIO, OVERLAY, TEXT, STICKER }
+enum class TrackType { VIDEO, AUDIO, OVERLAY, TEXT, STICKER, FILTER }
 
 @Entity(
     tableName = "tracks",
@@ -44,7 +44,7 @@ data class TrackEntity(
     val zOrder: Int,
 )
 
-enum class ClipType { VIDEO, AUDIO, IMAGE, TEXT, STICKER }
+enum class ClipType { VIDEO, AUDIO, IMAGE, TEXT, STICKER, FILTER }
 
 @Entity(
     tableName = "clips",

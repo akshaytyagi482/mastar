@@ -8,12 +8,10 @@ import androidx.media3.effect.RgbMatrix
 
 /**
  * Visible clip transitions built from Media3's time-varying primitives:
- * RgbMatrix (per-frame color matrix) and MatrixTransformation (per-frame
- * geometry). A transition on clip A animates A's tail (OUT phase) and the
- * next clip's head (IN phase) — same effects in preview and export.
- *
- * The C++ gl-transitions host remains for the cross-frame compositor
- * milestone; these run everywhere today.
+ * RgbMatrix (per-frame color) and MatrixTransformation (per-frame geometry).
+ * A transition on clip A animates A's tail (OUT phase) and the next clip's
+ * head (IN phase) — same effects in preview and export. All lambdas reuse
+ * their Matrix/FloatArray: zero allocation on the render hot path.
  */
 @UnstableApi
 object Transitions {
@@ -29,6 +27,9 @@ object Transitions {
         TransitionInfo("slideright", "Slide →"),
     )
 
+    /** Full transition length stored on the clip; each side plays this window. */
+    const val DEFAULT_DURATION_MS = 600L
+
     /** Linear 0→1 progress inside [windowStartUs, windowEndUs]. */
     private fun progress(timeUs: Long, windowStartUs: Long, windowEndUs: Long): Float {
         if (windowEndUs <= windowStartUs) return 1f
@@ -36,12 +37,24 @@ object Transitions {
             .coerceIn(0f, 1f)
     }
 
-    private fun gainMatrix(gain: Float): FloatArray = floatArrayOf(
-        gain, 0f, 0f, 0f,
-        0f, gain, 0f, 0f,
-        0f, 0f, gain, 0f,
-        0f, 0f, 0f, 1f,
-    )
+    private fun gainEffect(gainAt: (timeUs: Long) -> Float): Effect {
+        val m = FloatArray(16)
+        return RgbMatrix { timeUs, _ ->
+            val g = gainAt(timeUs)
+            m.fill(0f)
+            m[0] = g; m[5] = g; m[10] = g; m[15] = 1f
+            m
+        }
+    }
+
+    private fun matrixEffect(configure: (matrix: Matrix, timeUs: Long) -> Unit): Effect {
+        val matrix = Matrix()
+        return MatrixTransformation { timeUs ->
+            matrix.reset()
+            configure(matrix, timeUs)
+            matrix
+        }
+    }
 
     /**
      * OUT phase on the tail of a clip. [itemDurationUs] is the clip's
@@ -52,37 +65,29 @@ object Transitions {
         val start = (itemDurationUs - windowUs).coerceAtLeast(0)
         val end = itemDurationUs
         return when (id) {
-            "flash" -> listOf(
-                RgbMatrix { timeUs, _ ->
-                    gainMatrix(1f + 4f * progress(timeUs, start, end))
-                }
-            )
+            "flash" -> listOf(gainEffect { t -> 1f + 4f * progress(t, start, end) })
             "zoomin" -> listOf(
-                MatrixTransformation { timeUs ->
-                    val p = progress(timeUs, start, end)
-                    Matrix().apply { setScale(1f + 0.4f * p, 1f + 0.4f * p) }
+                matrixEffect { m, t ->
+                    val s = 1f + 0.5f * progress(t, start, end)
+                    m.postScale(s, s)
                 },
-                dipToBlack(start, end),
+                gainEffect { t -> 1f - progress(t, start, end) },
             )
             "zoomout" -> listOf(
-                MatrixTransformation { timeUs ->
-                    val p = progress(timeUs, start, end)
-                    Matrix().apply { setScale(1f - 0.3f * p, 1f - 0.3f * p) }
+                matrixEffect { m, t ->
+                    val s = 1f - 0.4f * progress(t, start, end)
+                    m.postScale(s, s)
                 },
-                dipToBlack(start, end),
+                gainEffect { t -> 1f - progress(t, start, end) },
             )
             "slideleft" -> listOf(
-                MatrixTransformation { timeUs ->
-                    // NDC spans 2 units; slide fully off-screen.
-                    Matrix().apply { setTranslate(-2f * progress(timeUs, start, end), 0f) }
-                }
+                // NDC spans 2 units; slide fully off-screen.
+                matrixEffect { m, t -> m.postTranslate(-2f * progress(t, start, end), 0f) }
             )
             "slideright" -> listOf(
-                MatrixTransformation { timeUs ->
-                    Matrix().apply { setTranslate(2f * progress(timeUs, start, end), 0f) }
-                }
+                matrixEffect { m, t -> m.postTranslate(2f * progress(t, start, end), 0f) }
             )
-            else -> listOf(dipToBlack(start, end)) // "fade" + legacy ids
+            else -> listOf(gainEffect { t -> 1f - progress(t, start, end) }) // fade + legacy
         }
     }
 
@@ -91,48 +96,32 @@ object Transitions {
         val start = 0L
         val end = windowUs.coerceAtLeast(1)
         return when (id) {
-            "flash" -> listOf(
-                RgbMatrix { timeUs, _ ->
-                    gainMatrix(1f + 4f * (1f - progress(timeUs, start, end)))
-                }
-            )
+            "flash" -> listOf(gainEffect { t -> 1f + 4f * (1f - progress(t, start, end)) })
             "zoomin" -> listOf(
-                MatrixTransformation { timeUs ->
-                    val p = 1f - progress(timeUs, start, end)
-                    val s = 1f - 0.3f * p
-                    Matrix().apply { setScale(s, s) }
+                matrixEffect { m, t ->
+                    val s = 1f - 0.4f * (1f - progress(t, start, end))
+                    m.postScale(s, s)
                 },
-                riseFromBlack(start, end),
+                gainEffect { t -> progress(t, start, end) },
             )
             "zoomout" -> listOf(
-                MatrixTransformation { timeUs ->
-                    val p = 1f - progress(timeUs, start, end)
-                    val s = 1f + 0.4f * p
-                    Matrix().apply { setScale(s, s) }
+                matrixEffect { m, t ->
+                    val s = 1f + 0.5f * (1f - progress(t, start, end))
+                    m.postScale(s, s)
                 },
-                riseFromBlack(start, end),
+                gainEffect { t -> progress(t, start, end) },
             )
             "slideleft" -> listOf(
-                MatrixTransformation { timeUs ->
-                    Matrix().apply {
-                        setTranslate(2f * (1f - progress(timeUs, start, end)), 0f)
-                    }
+                matrixEffect { m, t ->
+                    m.postTranslate(2f * (1f - progress(t, start, end)), 0f)
                 }
             )
             "slideright" -> listOf(
-                MatrixTransformation { timeUs ->
-                    Matrix().apply {
-                        setTranslate(-2f * (1f - progress(timeUs, start, end)), 0f)
-                    }
+                matrixEffect { m, t ->
+                    m.postTranslate(-2f * (1f - progress(t, start, end)), 0f)
                 }
             )
-            else -> listOf(riseFromBlack(start, end))
+            else -> listOf(gainEffect { t -> progress(t, start, end) })
         }
     }
-
-    private fun dipToBlack(startUs: Long, endUs: Long): Effect =
-        RgbMatrix { timeUs, _ -> gainMatrix(1f - progress(timeUs, startUs, endUs)) }
-
-    private fun riseFromBlack(startUs: Long, endUs: Long): Effect =
-        RgbMatrix { timeUs, _ -> gainMatrix(progress(timeUs, startUs, endUs)) }
 }

@@ -38,7 +38,7 @@ class PreviewEngine(private val context: Context) {
     /** Preview renders at reduced resolution to stay cool on budget phones. */
     private fun previewSize(): Pair<Int, Int> {
         val shortSide = minOf(canvasWidth, canvasHeight)
-        val scale = if (shortSide > 720) 720f / shortSide else 1f
+        val scale = if (shortSide > 540) 540f / shortSide else 1f
         return Pair(
             ((canvasWidth * scale).toInt() and -2),
             ((canvasHeight * scale).toInt() and -2),
@@ -63,10 +63,12 @@ class PreviewEngine(private val context: Context) {
         if (layers.videoClips.isEmpty()) return
 
         val (w, h) = previewSize()
+        val needsMultiInput =
+            includeOverlayTrack && CompositionFactory.needsMultipleInputs(layers)
         val builder = CompositionPlayer.Builder(context)
-        if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
-            // The default graph only composites one video sequence; PIP
-            // requires the multi-input GL graph.
+        if (needsMultiInput) {
+            // Photo PIP rides the normal graph via bitmap overlays; only
+            // VIDEO PIP needs the multi-input GL graph.
             builder.setPreviewingVideoGraphFactory(PreviewingMultipleInputVideoGraph.Factory())
         }
         val newPlayer = builder.build()
@@ -74,9 +76,11 @@ class PreviewEngine(private val context: Context) {
         newPlayer.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 // A device-specific compositor failure must not brick the
-                // preview: retry once without the PIP layer, else tell the user.
-                if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
+                // preview: retry once without the video-PIP layer — and SAY so.
+                if (needsMultiInput) {
                     rebuild(layers, includeOverlayTrack = false)
+                    _error.value =
+                        "Video overlay preview isn't supported on this device — it will still export"
                 } else {
                     _error.value = "Preview error: ${error.errorCodeName}"
                 }
@@ -92,8 +96,10 @@ class PreviewEngine(private val context: Context) {
             _player.value = newPlayer
         }.onFailure { failure ->
             newPlayer.release()
-            if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
+            if (needsMultiInput) {
                 rebuild(layers, includeOverlayTrack = false)
+                _error.value =
+                    "Video overlay preview isn't supported on this device — it will still export"
             } else {
                 _error.value = "Preview error: ${failure.message}"
             }

@@ -140,8 +140,11 @@ fun TimelineView(
             TimeRuler(state, viewportWidthPx)
             Spacer(Modifier.height(6.dp))
 
-            // Text/sticker chips sit above everything, like CapCut.
-            tracks.filter { it.track.type == TrackType.TEXT || it.track.type == TrackType.STICKER }
+            // Text/sticker/filter chips sit above everything, like CapCut.
+            tracks.filter {
+                it.track.type == TrackType.TEXT || it.track.type == TrackType.STICKER ||
+                    it.track.type == TrackType.FILTER
+            }
                 .sortedByDescending { it.track.zOrder }
                 .forEach { lane ->
                     if (lane.clips.isNotEmpty()) {
@@ -480,6 +483,7 @@ private fun ClipView(
                 ClipType.AUDIO -> AudioWaveform(clip)
                 ClipType.TEXT -> ClipLabel("T  ${previewText(clip)}")
                 ClipType.STICKER -> ClipLabel("★ ${clip.displayName ?: "sticker"}")
+                ClipType.FILTER -> ClipLabel("◐ ${clip.displayName ?: clip.filterId ?: "filter"}")
             }
 
             // Status badges: locked / muted / hidden.
@@ -724,4 +728,5 @@ private fun clipColor(type: ClipType): Color = when (type) {
     ClipType.IMAGE -> Color(0xFF2A2A2E)
     ClipType.TEXT -> ClipText.copy(alpha = 0.85f)
     ClipType.STICKER -> ClipOverlay.copy(alpha = 0.85f)
+    ClipType.FILTER -> Saffron.copy(alpha = 0.55f)
 }

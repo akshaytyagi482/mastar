@@ -55,18 +55,19 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.6.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.6.0.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.7.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.7.0.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
 3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
 
-> v0.6.0 — the pro timeline wave: visible transitions (Fade/Flash/Zoom/Slide),
-> keyframe animation with timeline diamonds, speed ramps with a draggable
-> curve graph, audio waveforms, long-press clip menu (rename/lock/mute/hide/
-> ripple delete), multi-select + grouping, insert mode, snap haptics + toggle,
-> drag-to-place PIP in the preview, duration labels, and full-length filmstrip
-> thumbnails at any zoom. See [docs/FEATURES.md](docs/FEATURES.md).
+> v0.7.0 — keyframes & transform, done right: transform now runs after the
+> canvas fit (it actually shows), CapCut-style auto-keyframing (edit at the
+> playhead → diamond drops automatically), easing curves per diamond, pinch
+> to resize + drag to place any clip in the preview, editable text clips,
+> photo overlays on a device-safe render path, FILTER LAYERS (filter as a
+> timeline clip covering a time range), lighter 540p preview.
+> See [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Building
 

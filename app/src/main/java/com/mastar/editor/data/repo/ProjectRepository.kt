@@ -198,6 +198,25 @@ class ProjectRepository(private val db: MastarDatabase) {
         )
     )
 
+    /** Filter LAYER clip: grades everything under it for its time range. */
+    suspend fun addFilterLayerClip(
+        trackId: Long,
+        filterId: String,
+        timelineStartMs: Long,
+        durationMs: Long,
+    ): Long = db.clipDao().insertClip(
+        ClipEntity(
+            trackId = trackId,
+            type = ClipType.FILTER,
+            sourceUri = "",
+            sourceStartMs = 0,
+            sourceEndMs = durationMs,
+            sourceDurationMs = 3_600_000,
+            timelineStartMs = timelineStartMs,
+            filterId = filterId,
+        )
+    )
+
     /** Overlay clips (TEXT/STICKER) have no source media; duration is explicit. */
     suspend fun addOverlayClip(
         trackId: Long,
@@ -224,6 +243,9 @@ class ProjectRepository(private val db: MastarDatabase) {
 
     suspend fun deleteKeyframe(keyframeId: Long) =
         db.keyframeDao().deleteKeyframe(keyframeId)
+
+    suspend fun updateKeyframe(keyframe: KeyframeEntity) =
+        db.keyframeDao().updateKeyframe(keyframe)
 
     fun observeKeyframesForProject(projectId: Long): Flow<List<KeyframeEntity>> =
         db.keyframeDao().observeKeyframesForProject(projectId)
