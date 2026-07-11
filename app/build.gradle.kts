@@ -16,8 +16,8 @@ android {
         // still guaranteeing OpenGL ES 3.0 and MediaCodec surface encoding.
         minSdk = 24
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.9.0"
+        versionCode = 12
+        versionName = "0.9.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

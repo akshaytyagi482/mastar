@@ -99,10 +99,27 @@ class EditorViewModel(
                     kotlinx.coroutines.delay(160)
                     lastLayers = layers
                     lastCanvas = canvas
+                    // Transition frames must exist BEFORE the composition is
+                    // built or the transition renders as a hard cut.
+                    kotlinx.coroutines.withContext(Dispatchers.IO) {
+                        ensureTransitionFrames(layers)
+                    }
                     previewEngine.setCanvas(canvas.first, canvas.second)
                     previewEngine.setTimeline(layers)
                 }
             }
+        }
+    }
+
+    /** Extracts (once, then disk-cached) the head frames each cross transition plays. */
+    private fun ensureTransitionFrames(layers: CompositionFactory.Layers) {
+        CompositionFactory.transitionSegments(layers.videoClips).forEach { segment ->
+            com.mastar.editor.engine.effects.TransitionFrames.ensure(
+                getApplication(),
+                segment.clip.sourceUri,
+                segment.clip.sourceStartMs,
+                segment.windowMs,
+            )
         }
     }
 
@@ -492,24 +509,22 @@ class EditorViewModel(
             val next = trackClips.firstOrNull {
                 it.id != clip.id && it.timelineStartMs >= clip.timelineStartMs + 1
             }
+            // A transition joins TWO clips — nothing to join after the last one.
+            if (transitionId != null && next == null) return@launch
 
             val oldOverlap =
                 if (com.mastar.editor.engine.effects.Transitions.overlaps(clip.transitionId)) {
                     clip.transitionDurationMs
                 } else 0L
-            val newW = when {
-                transitionId == null -> 0L
-                next == null -> com.mastar.editor.engine.effects.Transitions.DEFAULT_DURATION_MS
-                else -> minOf(
-                    com.mastar.editor.engine.effects.Transitions.DEFAULT_DURATION_MS,
-                    clip.timelineDurationMs / 2,
-                    next.timelineDurationMs / 2,
-                ).coerceAtLeast(200L)
-            }
+            val newW = if (transitionId == null || next == null) 0L else minOf(
+                com.mastar.editor.engine.effects.Transitions.DEFAULT_DURATION_MS,
+                clip.timelineDurationMs / 2,
+                next.timelineDurationMs / 2,
+            ).coerceAtLeast(200L)
             val newOverlap =
-                if (com.mastar.editor.engine.effects.Transitions.overlaps(transitionId) &&
-                    next != null
-                ) newW else 0L
+                if (com.mastar.editor.engine.effects.Transitions.overlaps(transitionId)) {
+                    newW
+                } else 0L
 
             snapshotForUndo()
             repository.updateClip(
@@ -528,6 +543,41 @@ class EditorViewModel(
                     excludeClipId = clip.id,
                 )
             }
+        }
+    }
+
+    /** True when another clip follows [clipId] on its own track. */
+    fun hasNextClip(clipId: Long): Boolean {
+        val clip = clipById(clipId) ?: return false
+        return project.value?.tracks
+            ?.firstOrNull { it.track.id == clip.trackId }
+            ?.clips?.any {
+                it.id != clip.id && it.timelineStartMs >= clip.timelineStartMs + 1
+            } == true
+    }
+
+    /** Single-clip entrance/exit animation (no neighbour clip involved). */
+    fun setClipAnimation(
+        clipId: Long,
+        animInId: String?,
+        animOutId: String?,
+        durationMs: Long,
+    ) {
+        viewModelScope.launch {
+            val clip = clipById(clipId) ?: return@launch
+            if (clip.locked) return@launch
+            // The two ramps can't be longer than the clip itself.
+            val maxMs = (clip.timelineDurationMs / 2).coerceAtLeast(100L)
+            val d = durationMs.coerceIn(100L, maxMs)
+            snapshotForUndo()
+            repository.updateClip(
+                clip.copy(
+                    animInId = animInId,
+                    animInDurationMs = if (animInId == null) 0 else d,
+                    animOutId = animOutId,
+                    animOutDurationMs = if (animOutId == null) 0 else d,
+                )
+            )
         }
     }
 

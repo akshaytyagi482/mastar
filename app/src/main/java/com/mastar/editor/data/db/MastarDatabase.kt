@@ -12,7 +12,7 @@ import androidx.room.RoomDatabase
         ClipEntity::class,
         KeyframeEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class MastarDatabase : RoomDatabase() {

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AcUnit
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
@@ -122,6 +123,7 @@ enum class EditorTool(
     ADJUST(Icons.Default.GraphicEq, "Adjust", true),
     TRANSFORM(Icons.Default.Transform, "Transform", true),
     KEYFRAME(Icons.Default.Timeline, "Keyframe", true),
+    ANIMATION(Icons.Default.AutoAwesome, "Animation", true),
     FREEZE(Icons.Default.AcUnit, "Freeze", true),
     TRANSITION(Icons.Default.SwapHoriz, "Transition", true),
     DELETE(Icons.Default.Delete, "Delete", true),
@@ -134,7 +136,8 @@ private val ROOT_TOOLS = listOf(
 private val CLIP_TOOLS = listOf(
     EditorTool.SPLIT, EditorTool.DUPLICATE, EditorTool.SPEED, EditorTool.VOLUME,
     EditorTool.VOICE, EditorTool.FILTER, EditorTool.ADJUST, EditorTool.TRANSFORM,
-    EditorTool.KEYFRAME, EditorTool.FREEZE, EditorTool.TRANSITION, EditorTool.DELETE,
+    EditorTool.KEYFRAME, EditorTool.ANIMATION, EditorTool.FREEZE,
+    EditorTool.TRANSITION, EditorTool.DELETE,
 )
 private val TEXT_TOOLS = listOf(
     EditorTool.EDIT_TEXT, EditorTool.DUPLICATE, EditorTool.KEYFRAME, EditorTool.DELETE,
@@ -697,16 +700,71 @@ fun ToolPanel(
                 )
             }
             EditorTool.TRANSITION -> {
+                if (!viewModel.hasNextClip(clip.id)) {
+                    Text(
+                        "A transition joins two clips — add a clip after this " +
+                            "one first. To animate a single clip, use Animation.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 11.sp,
+                    )
+                } else {
+                    Text(
+                        "Cross transitions overlap the clips (the timeline gets " +
+                            "shorter by the transition, like CapCut).",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 10.sp,
+                    )
+                    ChipRow(
+                        options = TRANSITIONS,
+                        selectedId = clip.transitionId,
+                        onSelect = { id -> viewModel.setTransition(clip.id, id) },
+                    )
+                }
+            }
+            EditorTool.ANIMATION -> {
+                var animDurMs by remember(clip.id) {
+                    mutableFloatStateOf(
+                        maxOf(clip.animInDurationMs, clip.animOutDurationMs)
+                            .takeIf { it > 0 }?.toFloat()
+                            ?: Transitions.DEFAULT_ANIMATION_MS.toFloat()
+                    )
+                }
                 Text(
-                    "Cross transitions overlap the clips (the timeline gets " +
-                        "shorter by the transition, like CapCut).",
+                    "In / Out animations play on this clip alone — no second " +
+                        "clip needed.",
                     color = Color.White.copy(alpha = 0.6f),
                     fontSize = 10.sp,
                 )
+                Text("In", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                 ChipRow(
-                    options = TRANSITIONS,
-                    selectedId = clip.transitionId,
-                    onSelect = { id -> viewModel.setTransition(clip.id, id) },
+                    options = IN_ANIMATIONS,
+                    selectedId = clip.animInId,
+                    onSelect = { id ->
+                        viewModel.setClipAnimation(
+                            clip.id, id, clip.animOutId, animDurMs.toLong()
+                        )
+                    },
+                )
+                Text("Out", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                ChipRow(
+                    options = OUT_ANIMATIONS,
+                    selectedId = clip.animOutId,
+                    onSelect = { id ->
+                        viewModel.setClipAnimation(
+                            clip.id, clip.animInId, id, animDurMs.toLong()
+                        )
+                    },
+                )
+                PanelSlider(
+                    label = "Duration %.1fs".format(animDurMs / 1000f),
+                    value = animDurMs,
+                    range = 100f..2000f,
+                    onValue = { animDurMs = it },
+                    onCommit = {
+                        viewModel.setClipAnimation(
+                            clip.id, clip.animInId, clip.animOutId, animDurMs.toLong()
+                        )
+                    },
                 )
             }
             else -> Unit
@@ -929,6 +987,8 @@ private fun ChipRow(
 
 /** Engine-rendered transitions (visible in preview AND export). */
 private val TRANSITIONS = Transitions.TRANSITIONS.map { it.id to it.displayName }
+private val IN_ANIMATIONS = Transitions.IN_ANIMATIONS.map { it.id to it.displayName }
+private val OUT_ANIMATIONS = Transitions.OUT_ANIMATIONS.map { it.id to it.displayName }
 
 /** CapCut-style export sheet: resolution + quality. */
 @Composable

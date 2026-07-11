@@ -23,9 +23,11 @@ import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.data.db.KeyframeEntity
 import com.mastar.editor.engine.audio.Silence
 import com.mastar.editor.engine.effects.EffectResolver
+import com.mastar.editor.engine.effects.FrameSequenceOverlay
 import com.mastar.editor.engine.effects.ImagePipOverlay
 import com.mastar.editor.engine.effects.TimedFilterLayer
 import com.mastar.editor.engine.effects.TimedTextOverlay
+import com.mastar.editor.engine.effects.TransitionFrames
 import com.mastar.editor.engine.effects.Transitions
 import com.mastar.editor.engine.keyframe.KeyframeEngine
 import com.mastar.editor.engine.speed.SpeedCurve
@@ -70,27 +72,14 @@ object CompositionFactory {
         require(layers.videoClips.isNotEmpty()) { "Timeline is empty" }
 
         // True cross-clip transitions: where a transition-carrying clip
-        // overlaps its neighbour, the incoming clip's head plays on a
-        // synthetic compositor lane while the outgoing clip continues
-        // underneath — both live at once, like CapCut.
+        // overlaps its neighbour, the incoming clip's pre-extracted head
+        // frames animate OVER the outgoing clip as a bitmap overlay while
+        // it keeps playing — both visible at once, like CapCut, but on the
+        // ordinary single-input graph (the multi-input compositor froze
+        // some devices).
         val sortedMain = layers.videoClips.sortedBy { it.timelineStartMs }
-        val headTrims = HashMap<Long, Long>()
-        val segments = mutableListOf<TransitionSegment>()
-        for (i in 1 until sortedMain.size) {
-            val prev = sortedMain[i - 1]
-            val cur = sortedMain[i]
-            if (!Transitions.overlaps(prev.transitionId)) continue
-            val overlap = (prev.timelineEndMs - cur.timelineStartMs)
-                .coerceAtLeast(0)
-                .coerceAtMost(prev.transitionDurationMs)
-                .coerceAtMost(cur.timelineDurationMs - 100)
-            if (overlap > 0) {
-                headTrims[cur.id] = overlap
-                segments.add(
-                    TransitionSegment(cur, prev.transitionId!!, cur.timelineStartMs, overlap)
-                )
-            }
-        }
+        val segments = transitionSegments(sortedMain)
+        val headTrims = segments.associate { it.clip.id to it.windowMs }
 
         val mainSequence = videoSequence(
             sortedMain,
@@ -111,8 +100,6 @@ object CompositionFactory {
             .filter { it.type == ClipType.IMAGE }
             .sortedBy { it.timelineStartMs }
 
-        val transitionLane = transitionLaneSequence(segments, outWidth, outHeight)
-
         val sequences = buildList {
             add(mainSequence)
             videoPipLanes.forEach { laneClips ->
@@ -124,7 +111,6 @@ object CompositionFactory {
                     )
                 )
             }
-            transitionLane?.let { add(it) }
             audioSequence(context, layers.audioClips)?.let { add(it) }
         }
 
@@ -134,16 +120,12 @@ object CompositionFactory {
         return Composition.Builder(sequences)
             .setEffects(
                 compositionEffects(
-                    context, layers, imagePipClips, textPxPerSp,
-                    minOf(outWidth, outHeight),
+                    context, layers, imagePipClips, segments, textPxPerSp,
+                    outWidth, outHeight,
                 )
             )
             .setVideoCompositorSettings(
-                PipCompositorSettings(
-                    videoPipLanes,
-                    if (transitionLane != null) segments else emptyList(),
-                    layers.keyframesByClip,
-                )
+                PipCompositorSettings(videoPipLanes, layers.keyframesByClip)
             )
             .build()
     }
@@ -156,18 +138,39 @@ object CompositionFactory {
         val windowMs: Long,
     )
 
-    /** True when the composition needs the multi-input video graph. */
-    fun needsMultipleInputs(layers: Layers): Boolean {
-        if (layers.overlayLanes.any { lane -> lane.any { it.type == ClipType.VIDEO } }) return true
-        val sorted = layers.videoClips.sortedBy { it.timelineStartMs }
+    /**
+     * Where each cross transition actually overlaps on the timeline. The
+     * incoming clip is head-trimmed by the window and its head frames play
+     * as an overlay instead. Shared by the factory (to build the render)
+     * and the editor (to pre-extract the frames).
+     */
+    fun transitionSegments(videoClips: List<ClipEntity>): List<TransitionSegment> {
+        val sorted = videoClips.sortedBy { it.timelineStartMs }
+        val segments = mutableListOf<TransitionSegment>()
         for (i in 1 until sorted.size) {
             val prev = sorted[i - 1]
-            if (Transitions.overlaps(prev.transitionId) &&
-                prev.timelineEndMs > sorted[i].timelineStartMs
-            ) return true
+            val cur = sorted[i]
+            if (!Transitions.overlaps(prev.transitionId)) continue
+            val overlap = (prev.timelineEndMs - cur.timelineStartMs)
+                .coerceAtLeast(0)
+                .coerceAtMost(prev.transitionDurationMs)
+                .coerceAtMost(cur.timelineDurationMs - 100)
+            if (overlap > 0) {
+                segments.add(
+                    TransitionSegment(cur, prev.transitionId!!, cur.timelineStartMs, overlap)
+                )
+            }
         }
-        return false
+        return segments
     }
+
+    /**
+     * True when the composition needs the multi-input video graph — only
+     * video-over-video PIP lanes. Transitions and photo PIP run as bitmap
+     * overlays on the single-input graph, which every device handles.
+     */
+    fun needsMultipleInputs(layers: Layers): Boolean =
+        layers.overlayLanes.any { lane -> lane.any { it.type == ClipType.VIDEO } }
 
     /**
      * Maps each VIDEO overlay clip's (possibly keyframed) placement onto the
@@ -176,24 +179,13 @@ object CompositionFactory {
      */
     private class PipCompositorSettings(
         private val videoPipLanes: List<List<ClipEntity>>,
-        private val transitionSegments: List<TransitionSegment>,
         private val keyframesByClip: Map<Long, List<KeyframeEntity>>,
     ) : VideoCompositorSettings {
 
         override fun getOutputSize(inputSizes: List<Size>): Size = inputSizes[0]
 
         override fun getOverlaySettings(inputId: Int, presentationTimeUs: Long): OverlaySettings {
-            // inputId 0 is the primary sequence; PIP lanes follow in order,
-            // then the synthetic transition lane.
-            if (transitionSegments.isNotEmpty() && inputId == videoPipLanes.size + 1) {
-                val timeMs = presentationTimeUs / 1000
-                val segment = transitionSegments.firstOrNull {
-                    timeMs in it.windowStartMs until (it.windowStartMs + it.windowMs)
-                } ?: return StaticOverlaySettings.Builder().setAlphaScale(0f).build()
-                val progress =
-                    (timeMs - segment.windowStartMs).toFloat() / segment.windowMs
-                return Transitions.crossSettings(segment.styleId, progress)
-            }
+            // inputId 0 is the primary sequence; PIP lanes follow in order.
             val lane = videoPipLanes.getOrNull(inputId - 1)
                 ?: return StaticOverlaySettings.Builder().build()
             val timeMs = presentationTimeUs / 1000
@@ -272,68 +264,6 @@ object CompositionFactory {
         return builder.build()
     }
 
-    /**
-     * The synthetic lane playing each incoming clip's head during its
-     * transition window; the compositor animates it (alpha/push/zoom/spin).
-     */
-    private fun transitionLaneSequence(
-        segments: List<TransitionSegment>,
-        outWidth: Int,
-        outHeight: Int,
-    ): EditedMediaItemSequence? {
-        if (segments.isEmpty()) return null
-        val builder = EditedMediaItemSequence.Builder()
-        var cursorMs = 0L
-        for (segment in segments.sortedBy { it.windowStartMs }) {
-            if (segment.windowStartMs < cursorMs) continue // safety: no lane overlap
-            val gapMs = segment.windowStartMs - cursorMs
-            if (gapMs > 0) builder.addItem(blackFiller(gapMs, outWidth, outHeight))
-            val clip = segment.clip
-            val isImage = clip.type == ClipType.IMAGE
-            val mediaItemBuilder = MediaItem.Builder().setUri(Uri.parse(clip.sourceUri))
-            if (isImage) {
-                mediaItemBuilder.setImageDurationMs(segment.windowMs)
-            } else {
-                val headEndSourceMs =
-                    clip.sourceStartMs + (segment.windowMs * clip.speed).toLong()
-                mediaItemBuilder.setClippingConfiguration(
-                    MediaItem.ClippingConfiguration.Builder()
-                        .setStartPositionMs(clip.sourceStartMs)
-                        .setEndPositionMs(headEndSourceMs.coerceAtMost(clip.sourceEndMs))
-                        .build()
-                )
-            }
-            val itemBuilder = EditedMediaItem.Builder(mediaItemBuilder.build())
-                .setEffects(
-                    Effects(
-                        emptyList(),
-                        buildList {
-                            addAll(EffectResolver.colorEffectsFor(clip))
-                            add(
-                                Presentation.createForWidthAndHeight(
-                                    outWidth, outHeight,
-                                    Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP,
-                                )
-                            )
-                        },
-                    )
-                )
-            if (isImage) {
-                itemBuilder.setFrameRate(30)
-            } else {
-                itemBuilder
-                    .setRemoveAudio(true)
-                    .setDurationUs(
-                        (if (clip.sourceDurationMs > 0) clip.sourceDurationMs
-                        else clip.sourceEndMs) * 1000
-                    )
-            }
-            builder.addItem(itemBuilder.build())
-            cursorMs = segment.windowStartMs + segment.windowMs
-        }
-        return builder.build()
-    }
-
     /** Black still stretched over a timeline hole (invisible on PIP lanes). */
     private fun blackFiller(durationMs: Long, outWidth: Int, outHeight: Int): EditedMediaItem =
         EditedMediaItem.Builder(
@@ -400,17 +330,42 @@ object CompositionFactory {
     }
 
     /**
-     * Composition-level effects (absolute output time): timed text, photo
-     * PIP overlays, then filter layers grading the fully composited frame.
+     * Composition-level effects (absolute output time): transition frame
+     * overlays first (they belong to the main track), then timed text and
+     * photo PIP, then filter layers grading the fully composited frame.
      */
     private fun compositionEffects(
         context: Context,
         layers: Layers,
         imagePipClips: List<ClipEntity>,
+        transitionSegments: List<TransitionSegment>,
         textPxPerSp: Float,
-        outShortSide: Int,
+        outWidth: Int,
+        outHeight: Int,
     ): Effects {
+        val outShortSide = minOf(outWidth, outHeight)
         val overlays = buildList<TextureOverlay> {
+            transitionSegments.forEach { segment ->
+                // Frames not extracted yet render as a clean hard cut; the
+                // editor pre-extracts them before every rebuild.
+                if (TransitionFrames.isReady(
+                        context, segment.clip.sourceUri,
+                        segment.clip.sourceStartMs, segment.windowMs,
+                    )
+                ) {
+                    add(
+                        FrameSequenceOverlay(
+                            context,
+                            segment.clip.sourceUri,
+                            segment.clip.sourceStartMs,
+                            segment.styleId,
+                            segment.windowStartMs,
+                            segment.windowMs,
+                            outWidth, outHeight,
+                        )
+                    )
+                }
+            }
             imagePipClips.forEach { clip ->
                 add(
                     ImagePipOverlay(
@@ -469,7 +424,9 @@ object CompositionFactory {
         }
 
         val curve = SpeedCurve.parse(speedCurveJson)
-        val itemDurationUs = timelineDurationMs * 1000
+        // The item's presented length: shorter than the timeline duration
+        // when the head plays inside the previous clip's transition window.
+        val itemDurationUs = (timelineDurationMs - headTrimMs) * 1000
 
         val videoEffects = buildList {
             // Speed first: downstream effect timestamps are output-time.
@@ -513,6 +470,15 @@ object CompositionFactory {
             }
             if (tailTransition != null && tailWindowUs > 0 && itemDurationUs > 0) {
                 addAll(Transitions.outEffects(tailTransition, itemDurationUs, tailWindowUs))
+            }
+            // Single-clip animations: entrance on the head, exit on the tail.
+            if (animInId != null && animInDurationMs > 0) {
+                addAll(Transitions.inEffects(animInId, animInDurationMs * 1000))
+            }
+            if (animOutId != null && animOutDurationMs > 0 && itemDurationUs > 0) {
+                addAll(
+                    Transitions.outEffects(animOutId, itemDurationUs, animOutDurationMs * 1000)
+                )
             }
         }
 

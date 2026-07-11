@@ -34,37 +34,25 @@ object Transitions {
     const val DEFAULT_DURATION_MS = 600L
 
     /**
-     * Compositor placement for the INCOMING clip's head during a true
-     * cross-clip transition: at progress 0 the outgoing clip owns the frame,
-     * at 1 the incoming clip fully covers it. Both clips are live — this is
-     * the CapCut overlap look.
+     * Single-clip animations (CapCut "Animation"): the same ramp primitives,
+     * but applied to ONE clip's head (In) or tail (Out) — no neighbour needed.
      */
-    fun crossSettings(
-        id: String,
-        progress: Float,
-    ): androidx.media3.effect.StaticOverlaySettings {
-        val p = progress.coerceIn(0f, 1f)
-        val b = androidx.media3.effect.StaticOverlaySettings.Builder()
-        when (id) {
-            "slideleft" -> {
-                // Incoming pushes in from the right, fully opaque.
-                b.setAlphaScale(1f).setBackgroundFrameAnchor(2f * (1f - p), 0f)
-            }
-            "slideright" -> {
-                b.setAlphaScale(1f).setBackgroundFrameAnchor(-2f * (1f - p), 0f)
-            }
-            "zoomin" -> {
-                val sc = 0.4f + 0.6f * p
-                b.setAlphaScale(p).setScale(sc, sc)
-            }
-            "spin" -> {
-                val sc = 0.3f + 0.7f * p
-                b.setAlphaScale(p).setScale(sc, sc).setRotationDegrees(180f * (1f - p))
-            }
-            else -> b.setAlphaScale(p) // cross fade
-        }
-        return b.build()
-    }
+    val IN_ANIMATIONS = listOf(
+        TransitionInfo("fade", "Fade in"),
+        TransitionInfo("zoomin", "Zoom in"),
+        TransitionInfo("zoomout", "Zoom out"),
+        TransitionInfo("slideleft", "Slide ←"),
+        TransitionInfo("slideright", "Slide →"),
+    )
+    val OUT_ANIMATIONS = listOf(
+        TransitionInfo("fade", "Fade out"),
+        TransitionInfo("zoomin", "Zoom in"),
+        TransitionInfo("zoomout", "Zoom out"),
+        TransitionInfo("slideleft", "Slide ←"),
+        TransitionInfo("slideright", "Slide →"),
+    )
+
+    const val DEFAULT_ANIMATION_MS = 500L
 
     /** Linear 0→1 progress inside [windowStartUs, windowEndUs]. */
     private fun progress(timeUs: Long, windowStartUs: Long, windowEndUs: Long): Float {

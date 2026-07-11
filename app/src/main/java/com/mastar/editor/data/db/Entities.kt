@@ -100,6 +100,11 @@ data class ClipEntity(
     /** GL transition INTO the next clip, e.g. "fade", "directionalwipe". */
     val transitionId: String? = null,
     val transitionDurationMs: Long = 0,
+    /** Single-clip entrance/exit animation (CapCut "Animation → In/Out"). */
+    val animInId: String? = null,
+    val animInDurationMs: Long = 0,
+    val animOutId: String? = null,
+    val animOutDurationMs: Long = 0,
     /** LUT filter asset name (PNG strip in assets/luts) + 0..1 intensity. */
     val filterId: String? = null,
     val filterIntensity: Float = 1f,

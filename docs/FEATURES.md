@@ -56,10 +56,17 @@ per-frame in preview AND export (MatrixTransformation/RgbMatrix for the main
 track, animated compositor placement for PIP). Eased with cubic bezier.
 
 ## 6. Transitions
-✅ Visible in preview and export: Fade (dip-to-black), Flash, Zoom in/out,
-Slide left/right — rendered as time-varying GPU ramps at clip boundaries.
-Cross-frame GLSL transitions (wipe/circle sampling both clips at once) still
-need the overlap compositor: ⏳ (C++ shader host stays ready).
+✅ True cross transitions between two clips: Cross fade, Push ←/→, Zoom, Spin
+(plus Flash as a boundary ramp). The clips overlap CapCut-style and the
+incoming clip's pre-extracted head frames animate over the outgoing one —
+a single-input render path that works on every device, identical in preview
+and export. Transitions only apply when a clip follows (the panel says so).
+Custom GLSL wipes/circles: ⏳ (C++ shader host stays ready).
+
+## 6b. Animations (single clip)
+✅ In/Out animations on ONE clip — Fade, Zoom in/out, Slide ←/→ with an
+adjustable duration (0.1–2s). This is the CapCut "Animation" tool: no second
+clip needed, unlike transitions.
 
 ## 7. Filters
 | Feature | Status |

@@ -116,7 +116,7 @@ class CompositionFactoryTest {
     }
 
     @Test
-    fun `cross transition builds an overlap lane and trims the incoming head`() {
+    fun `cross transition stays single-input and keeps the main lane contiguous`() {
         val a = videoClip(1, 0, durationMs = 5000)
             .copy(transitionId = "fade", transitionDurationMs = 600)
         // CapCut ripple: B overlaps A by the transition duration.
@@ -127,18 +127,76 @@ class CompositionFactoryTest {
             audioClips = emptyList(),
             textClips = emptyList(),
         )
-        assertTrue(CompositionFactory.needsMultipleInputs(layers))
+        // The multi-input compositor froze some devices — transitions must
+        // never require it (they render as bitmap overlays instead).
+        assertTrue(!CompositionFactory.needsMultipleInputs(layers))
 
         val composition = CompositionFactory.build(context, layers, 720, 1280)
-        // main + synthetic transition lane
-        assertEquals(2, composition.sequences.size)
-        // main stays contiguous (A + head-trimmed B, no fillers)
+        assertEquals(1, composition.sequences.size)
+        // A + head-trimmed B, contiguous (no filler despite the overlap).
         assertEquals(2, composition.sequences[0].editedMediaItems.size)
-        // transition lane: leading filler + B's head segment
-        val laneItems = composition.sequences[1].editedMediaItems
-        assertEquals(2, laneItems.size)
         composition.sequences.flatMap { it.editedMediaItems }
             .forEach { assertTrue(it.durationUs > 0) }
+    }
+
+    @Test
+    fun `transition segments follow the actual clip overlap`() {
+        val a = videoClip(1, 0, durationMs = 5000)
+            .copy(transitionId = "fade", transitionDurationMs = 600)
+        val b = videoClip(2, 4400, durationMs = 5000)
+
+        val segments = CompositionFactory.transitionSegments(listOf(a, b))
+
+        assertEquals(1, segments.size)
+        assertEquals(4400, segments[0].windowStartMs)
+        assertEquals(600, segments[0].windowMs)
+        assertEquals(b.id, segments[0].clip.id)
+    }
+
+    @Test
+    fun `ready transition frames attach a composition-level overlay`() {
+        val a = videoClip(1, 0, durationMs = 5000)
+            .copy(transitionId = "fade", transitionDurationMs = 600)
+        val b = videoClip(2, 4400, durationMs = 5000)
+        // Pretend the editor already extracted B's head frames.
+        val dir = com.mastar.editor.engine.effects.TransitionFrames
+            .cacheDirFor(context, b.sourceUri, b.sourceStartMs, 600)
+        dir.mkdirs()
+        repeat(com.mastar.editor.engine.effects.TransitionFrames.frameCount(600)) { i ->
+            java.io.File(dir, "f_%03d.jpg".format(i)).writeBytes(byteArrayOf(0))
+        }
+
+        val layers = CompositionFactory.Layers(
+            videoClips = listOf(a, b),
+            overlayLanes = emptyList(),
+            audioClips = emptyList(),
+            textClips = emptyList(),
+        )
+        val composition = CompositionFactory.build(context, layers, 720, 1280)
+
+        assertEquals(1, composition.sequences.size)
+        assertTrue(
+            "transition must render as a composition-level overlay",
+            composition.effects.videoEffects.isNotEmpty(),
+        )
+    }
+
+    @Test
+    fun `single-clip animations build without extra sequences`() {
+        val clip = videoClip(1, 0, durationMs = 5000).copy(
+            animInId = "fade", animInDurationMs = 500,
+            animOutId = "zoomin", animOutDurationMs = 500,
+        )
+        val layers = CompositionFactory.Layers(
+            videoClips = listOf(clip),
+            overlayLanes = emptyList(),
+            audioClips = emptyList(),
+            textClips = emptyList(),
+        )
+        val composition = CompositionFactory.build(context, layers, 720, 1280)
+
+        assertEquals(1, composition.sequences.size)
+        composition.sequences[0].editedMediaItems.forEach { assertTrue(it.durationUs > 0) }
     }
 
     @Test
