@@ -55,17 +55,18 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.5.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.5.0.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.6.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.6.0.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
 3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
 
-> v0.5.0: fixes the black preview (the preview engine violated three
-> CompositionPlayer constraints — now regression-tested on every build),
-> exports now save into your **gallery (Movies/Mastar)**, timeline thumbnails
-> load ~10x faster (sync-frame seeks + caching), and PIP preview uses the
-> multi-input GL graph. See [docs/FEATURES.md](docs/FEATURES.md).
+> v0.6.0 — the pro timeline wave: visible transitions (Fade/Flash/Zoom/Slide),
+> keyframe animation with timeline diamonds, speed ramps with a draggable
+> curve graph, audio waveforms, long-press clip menu (rename/lock/mute/hide/
+> ripple delete), multi-select + grouping, insert mode, snap haptics + toggle,
+> drag-to-place PIP in the preview, duration labels, and full-length filmstrip
+> thumbnails at any zoom. See [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Building
 
