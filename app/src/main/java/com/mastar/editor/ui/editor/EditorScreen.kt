@@ -8,12 +8,20 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
-import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -22,23 +30,31 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
+import com.mastar.editor.ui.timeline.TimelineActions
 import com.mastar.editor.ui.timeline.TimelineView
 import com.mastar.editor.ui.timeline.rememberTimelineState
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /**
  * CapCut-style editing workspace:
  *   top bar (close / aspect / export)
- *   preview + overlays
- *   transport row (time, frame stepping, undo/redo, play)
- *   timeline with filmstrips + trim handles
+ *   preview + overlays + draggable PIP placement
+ *   transport row (time, frame stepping, snap toggle, undo/redo, play)
+ *   timeline (filmstrips, waveforms, trim handles, keyframe diamonds)
  *   tool panel + bottom tool tabs
  */
 @UnstableApi
@@ -56,6 +72,9 @@ fun EditorScreen(
 
     val project by viewModel.project.collectAsState()
     val selectedClipId by viewModel.selectedClipId.collectAsState()
+    val multiSelection by viewModel.multiSelection.collectAsState()
+    val allKeyframes by viewModel.keyframes.collectAsState()
+    val renameTarget by viewModel.renameTarget.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
@@ -157,8 +176,8 @@ fun EditorScreen(
             onExportClick = { showExportDialog = true },
         )
 
-        // Preview + live overlays.
-        Box(
+        // Preview + overlays + PIP drag placement.
+        BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
                 .weight(1f)
@@ -178,11 +197,30 @@ fun EditorScreen(
                 modifier = Modifier.fillMaxSize(),
             )
             PreviewOverlays(viewModel, timelineState.playheadMs)
+
+            // Selected PIP clip: bordered box, draggable to reposition.
+            val selectedId = selectedClipId
+            if (selectedId != null && viewModel.isOverlayClip(selectedId)) {
+                viewModel.clipById(selectedId)?.let { pip ->
+                    PipPlacementBox(
+                        positionX = pip.positionX,
+                        positionY = pip.positionY,
+                        scale = pip.scale,
+                        onCommit = { x, y ->
+                            viewModel.updateClip(selectedId) {
+                                it.copy(positionX = x, positionY = y)
+                            }
+                        },
+                    )
+                }
+            }
+
             previewError?.let { message ->
-                androidx.compose.material3.Text(
+                Text(
                     text = message,
                     color = Color(0xFFFF5252),
-                    modifier = Modifier.align(androidx.compose.ui.Alignment.BottomStart)
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
                         .background(Color.Black.copy(alpha = 0.6f))
                         .padding(horizontal = 8.dp, vertical = 2.dp),
                 )
@@ -195,6 +233,10 @@ fun EditorScreen(
             isPlaying = isPlaying,
             canUndo = canUndo,
             canRedo = canRedo,
+            snapEnabled = timelineState.snappingEnabled,
+            onToggleSnap = {
+                timelineState.snappingEnabled = !timelineState.snappingEnabled
+            },
             onPlayPause = { viewModel.togglePlayback(timelineState.playheadMs) },
             onStepFrame = { deltaMs ->
                 val target = (timelineState.playheadMs + deltaMs).coerceAtLeast(0)
@@ -210,14 +252,21 @@ fun EditorScreen(
             state = timelineState,
             tracks = project?.tracks.orEmpty(),
             selectedClipId = selectedClipId,
-            onSelectClip = { id ->
-                viewModel.selectClip(id)
-                if (id == null && activeTool?.needsSelection == true) activeTool = null
+            multiSelection = multiSelection,
+            keyframeTimes = { clipId ->
+                allKeyframes.filter { it.clipId == clipId }.map { it.timeMs }
             },
-            onMoveClip = viewModel::moveClip,
-            onTrimClip = viewModel::trimClip,
-            onSeek = viewModel::seekTo,
-            onAddAudio = { pickAudio.launch(arrayOf("audio/*")) },
+            actions = TimelineActions(
+                onSelectClip = { id ->
+                    viewModel.selectClip(id)
+                    if (id == null && activeTool?.needsSelection == true) activeTool = null
+                },
+                onMoveClip = viewModel::moveClip,
+                onTrimClip = viewModel::trimClip,
+                onSeek = viewModel::seekTo,
+                onAddAudio = { pickAudio.launch(arrayOf("audio/*")) },
+                onMenuAction = viewModel::onClipMenuAction,
+            ),
             modifier = Modifier.weight(1f),
         )
 
@@ -226,6 +275,7 @@ fun EditorScreen(
             ToolPanel(
                 tool = tool,
                 viewModel = viewModel,
+                playheadMs = timelineState.playheadMs,
                 onClose = { activeTool = null },
             )
         }
@@ -266,6 +316,14 @@ fun EditorScreen(
         )
     }
 
+    renameTarget?.let { clip ->
+        RenameDialog(
+            initial = clip.displayName.orEmpty(),
+            onConfirm = { viewModel.renameClip(clip.id, it) },
+            onDismiss = viewModel::dismissRename,
+        )
+    }
+
     when (activeTool) {
         EditorTool.TEXT -> AddTextDialog(
             onConfirm = { payload ->
@@ -283,6 +341,77 @@ fun EditorScreen(
         )
         else -> Unit
     }
+}
+
+/**
+ * Bordered, draggable placement box for the selected PIP clip — drag it
+ * around the preview to position the layer (commits on release).
+ */
+@Composable
+private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.PipPlacementBox(
+    positionX: Float,
+    positionY: Float,
+    scale: Float,
+    onCommit: (x: Float, y: Float) -> Unit,
+) {
+    val density = LocalDensity.current
+    val widthPx = with(density) { maxWidth.toPx() }
+    val heightPx = with(density) { maxHeight.toPx() }
+    var dragOffset by remember(positionX, positionY) { mutableStateOf(Offset.Zero) }
+
+    val boxSizePx = (minOf(widthPx, heightPx) * scale).coerceAtLeast(48f)
+    val centerX = positionX * widthPx + dragOffset.x
+    val centerY = positionY * heightPx + dragOffset.y
+
+    Box(
+        Modifier
+            .offset {
+                IntOffset(
+                    (centerX - boxSizePx / 2).roundToInt(),
+                    (centerY - boxSizePx / 2).roundToInt(),
+                )
+            }
+            .size(with(density) { boxSizePx.toDp() })
+            .border(1.5.dp, Color.White.copy(alpha = 0.9f))
+            .pointerInput(positionX, positionY) {
+                detectDragGestures(
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        dragOffset += dragAmount
+                    },
+                    onDragEnd = {
+                        onCommit(
+                            ((positionX * widthPx + dragOffset.x) / widthPx).coerceIn(0f, 1f),
+                            ((positionY * heightPx + dragOffset.y) / heightPx).coerceIn(0f, 1f),
+                        )
+                        dragOffset = Offset.Zero
+                    },
+                    onDragCancel = { dragOffset = Offset.Zero },
+                )
+            },
+    )
+}
+
+@Composable
+private fun RenameDialog(
+    initial: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename clip") },
+        text = {
+            OutlinedTextField(value = text, onValueChange = { text = it }, singleLine = true)
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(text) }) { Text("OK") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 private fun probeDurationMs(context: Context, uri: Uri): Long {

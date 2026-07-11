@@ -106,7 +106,45 @@ class ProjectRepository(private val db: MastarDatabase) {
 
     /** CapCut-style duplicate: the copy lands right after the original. */
     suspend fun duplicateClip(clip: ClipEntity): Long =
-        db.clipDao().insertClip(clip.copy(id = 0, timelineStartMs = clip.timelineEndMs))
+        db.clipDao().insertClip(
+            clip.copy(id = 0, timelineStartMs = clip.timelineEndMs, groupId = null)
+        )
+
+    /** Insert mode: pushes overlapping clips right on [trackId]. */
+    suspend fun resolveTrackOverlaps(projectId: Long, trackId: Long) {
+        val fresh = db.projectDao().projectWithTracks(projectId) ?: return
+        val trackClips = fresh.tracks.firstOrNull { it.track.id == trackId }?.clips ?: return
+        com.mastar.editor.engine.timeline.TimelineOps.resolveOverlaps(trackClips)
+            .forEach { db.clipDao().updateClip(it) }
+    }
+
+    /** Ripple delete: removes the clip and closes the hole behind it. */
+    suspend fun rippleDelete(projectId: Long, clip: ClipEntity) {
+        val fresh = db.projectDao().projectWithTracks(projectId) ?: return
+        val trackClips = fresh.tracks.firstOrNull { it.track.id == clip.trackId }?.clips ?: return
+        db.clipDao().deleteClip(clip.id)
+        com.mastar.editor.engine.timeline.TimelineOps.rippleShiftAfterDelete(trackClips, clip)
+            .forEach { db.clipDao().updateClip(it) }
+    }
+
+    /** Moves every clip sharing [groupId] by [deltaMs] (grouped drag). */
+    suspend fun moveGroup(projectId: Long, groupId: Long, deltaMs: Long) {
+        val fresh = db.projectDao().projectWithTracks(projectId) ?: return
+        fresh.tracks.flatMap { it.clips }
+            .filter { it.groupId == groupId && !it.locked }
+            .forEach { c ->
+                db.clipDao().updateClip(
+                    c.copy(timelineStartMs = (c.timelineStartMs + deltaMs).coerceAtLeast(0))
+                )
+            }
+    }
+
+    /** Assigns (or clears, with null) a shared group id. */
+    suspend fun setGroup(clipIds: Collection<Long>, groupId: Long?) {
+        for (id in clipIds) {
+            db.clipDao().clipById(id)?.let { db.clipDao().updateClip(it.copy(groupId = groupId)) }
+        }
+    }
 
     /** Deep-copies a project with all tracks and clips. */
     suspend fun duplicateProject(projectId: Long, nowMs: Long): Long? {
@@ -183,6 +221,12 @@ class ProjectRepository(private val db: MastarDatabase) {
 
     suspend fun addKeyframe(keyframe: KeyframeEntity): Long =
         db.keyframeDao().insertKeyframe(keyframe)
+
+    suspend fun deleteKeyframe(keyframeId: Long) =
+        db.keyframeDao().deleteKeyframe(keyframeId)
+
+    fun observeKeyframesForProject(projectId: Long): Flow<List<KeyframeEntity>> =
+        db.keyframeDao().observeKeyframesForProject(projectId)
 
     suspend fun keyframesForClip(clipId: Long): List<KeyframeEntity> =
         db.keyframeDao().keyframesForClip(clipId)

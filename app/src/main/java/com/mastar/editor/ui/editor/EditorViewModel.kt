@@ -10,19 +10,30 @@ import androidx.media3.common.util.UnstableApi
 import com.mastar.editor.MastarApp
 import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
+import com.mastar.editor.data.db.EasingType
+import com.mastar.editor.data.db.KeyframeEntity
+import com.mastar.editor.data.db.KeyframeProperty
 import com.mastar.editor.data.db.ProjectWithTracks
 import com.mastar.editor.data.db.TrackType
 import com.mastar.editor.engine.CompositionFactory
 import com.mastar.editor.engine.export.ExportEngine
 import com.mastar.editor.engine.export.GalleryPublisher
+import com.mastar.editor.engine.keyframe.KeyframeEngine
 import com.mastar.editor.engine.playback.PreviewEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
+
+/** Long-press actions on a timeline clip. */
+enum class ClipMenuAction {
+    RENAME, DUPLICATE, LOCK, MUTE, HIDE,
+    SELECT_ADD, GROUP, UNGROUP, RIPPLE_DELETE, DELETE,
+}
 
 @UnstableApi
 class EditorViewModel(
@@ -39,8 +50,20 @@ class EditorViewModel(
         repository.observeProject(projectId)
             .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    val keyframes: StateFlow<List<KeyframeEntity>> =
+        repository.observeKeyframesForProject(projectId)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     private val _selectedClipId = MutableStateFlow<Long?>(null)
     val selectedClipId: StateFlow<Long?> = _selectedClipId
+
+    /** Multi-selection (long-press → Select); always includes the primary. */
+    private val _multiSelection = MutableStateFlow<Set<Long>>(emptySet())
+    val multiSelection: StateFlow<Set<Long>> = _multiSelection
+
+    /** Clip awaiting a rename dialog. */
+    private val _renameTarget = MutableStateFlow<ClipEntity?>(null)
+    val renameTarget: StateFlow<ClipEntity?> = _renameTarget
 
     private val _exportState = MutableStateFlow<ExportEngine.State>(ExportEngine.State.Idle)
     val exportState: StateFlow<ExportEngine.State> = _exportState
@@ -62,13 +85,13 @@ class EditorViewModel(
     private var lastCanvas: Pair<Int, Int>? = null
 
     init {
-        // The DB is the single source of truth: any clip change (from any
-        // code path) lands here and rebuilds the preview composition once.
+        // The DB is the single source of truth: any clip OR keyframe change
+        // lands here and rebuilds the preview composition once.
         viewModelScope.launch {
-            project.collect { p ->
+            combine(project, keyframes) { p, kfs -> p to kfs }.collect { (p, kfs) ->
                 p ?: return@collect
                 val canvas = p.project.canvasWidth to p.project.canvasHeight
-                val layers = layersFrom(p)
+                val layers = layersFrom(p, kfs)
                 if (layers != lastLayers || canvas != lastCanvas) {
                     lastLayers = layers
                     lastCanvas = canvas
@@ -79,16 +102,21 @@ class EditorViewModel(
         }
     }
 
-    private fun layersFrom(p: ProjectWithTracks): CompositionFactory.Layers {
+    private fun layersFrom(
+        p: ProjectWithTracks,
+        kfs: List<KeyframeEntity> = keyframes.value,
+    ): CompositionFactory.Layers {
         fun clipsOf(type: TrackType) = p.tracks
             .filter { it.track.type == type }
             .flatMap { it.clips }
+            .filter { !it.hidden }
             .sortedBy { it.timelineStartMs }
         return CompositionFactory.Layers(
             videoClips = clipsOf(TrackType.VIDEO),
             overlayClips = clipsOf(TrackType.OVERLAY),
             audioClips = clipsOf(TrackType.AUDIO),
             textClips = clipsOf(TrackType.TEXT),
+            keyframesByClip = kfs.groupBy { it.clipId },
         )
     }
 
@@ -98,6 +126,8 @@ class EditorViewModel(
     fun selectedClip(): ClipEntity? =
         _selectedClipId.value?.let { id -> allClips().firstOrNull { it.id == id } }
 
+    fun clipById(clipId: Long): ClipEntity? = allClips().firstOrNull { it.id == clipId }
+
     fun isOverlayClip(clipId: Long): Boolean =
         project.value?.tracks
             ?.firstOrNull { it.track.type == TrackType.OVERLAY }
@@ -105,7 +135,15 @@ class EditorViewModel(
 
     fun selectClip(clipId: Long?) {
         _selectedClipId.value = clipId
+        if (clipId == null) _multiSelection.value = emptySet()
     }
+
+    /** Keyframes of the selected clip, for panel + timeline diamonds. */
+    fun keyframesForSelected(): List<KeyframeEntity> =
+        _selectedClipId.value?.let { id -> keyframes.value.filter { it.clipId == id } }.orEmpty()
+
+    fun keyframesFor(clipId: Long): List<KeyframeEntity> =
+        keyframes.value.filter { it.clipId == clipId }
 
     private fun snapshotForUndo() {
         undoStack.addLast(allClips())
@@ -212,6 +250,7 @@ class EditorViewModel(
             val clip = selectedClip() ?: return@launch
             snapshotForUndo()
             repository.duplicateClip(clip)
+            repository.resolveTrackOverlaps(projectId, clip.trackId)
         }
     }
 
@@ -247,13 +286,26 @@ class EditorViewModel(
     fun updateClip(clipId: Long, transform: (ClipEntity) -> ClipEntity) {
         viewModelScope.launch {
             val clip = allClips().firstOrNull { it.id == clipId } ?: return@launch
+            if (clip.locked) return@launch
             snapshotForUndo()
             repository.updateClip(transform(clip))
         }
     }
 
+    /** Group-aware move with insert-mode overlap resolution. */
     fun moveClip(clipId: Long, newTimelineStartMs: Long) {
-        updateClip(clipId) { it.copy(timelineStartMs = newTimelineStartMs) }
+        viewModelScope.launch {
+            val clip = allClips().firstOrNull { it.id == clipId } ?: return@launch
+            if (clip.locked) return@launch
+            snapshotForUndo()
+            val delta = newTimelineStartMs - clip.timelineStartMs
+            if (clip.groupId != null) {
+                repository.moveGroup(projectId, clip.groupId, delta)
+            } else {
+                repository.updateClip(clip.copy(timelineStartMs = newTimelineStartMs))
+            }
+            repository.resolveTrackOverlaps(projectId, clip.trackId)
+        }
     }
 
     fun trimClip(clipId: Long, newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) {
@@ -269,6 +321,7 @@ class EditorViewModel(
     fun splitSelectedClipAtPlayhead(playheadMs: Long) {
         viewModelScope.launch {
             val clip = selectedClip() ?: return@launch
+            if (clip.locked) return@launch
             snapshotForUndo()
             repository.splitClipAt(clip, playheadMs)
         }
@@ -276,10 +329,118 @@ class EditorViewModel(
 
     fun deleteSelectedClip() {
         viewModelScope.launch {
-            val clipId = _selectedClipId.value ?: return@launch
+            val clip = selectedClip() ?: return@launch
+            if (clip.locked) return@launch
             snapshotForUndo()
-            repository.deleteClip(clipId)
+            repository.deleteClip(clip.id)
             _selectedClipId.value = null
+        }
+    }
+
+    /** Long-press menu dispatcher. */
+    fun onClipMenuAction(clipId: Long, action: ClipMenuAction) {
+        val clip = clipById(clipId) ?: return
+        when (action) {
+            ClipMenuAction.RENAME -> _renameTarget.value = clip
+            ClipMenuAction.DUPLICATE -> {
+                _selectedClipId.value = clipId
+                duplicateSelectedClip()
+            }
+            ClipMenuAction.LOCK -> viewModelScope.launch {
+                snapshotForUndo()
+                repository.updateClip(clip.copy(locked = !clip.locked))
+            }
+            ClipMenuAction.MUTE -> updateClip(clipId) { it.copy(muted = !it.muted) }
+            ClipMenuAction.HIDE -> viewModelScope.launch {
+                snapshotForUndo()
+                repository.updateClip(clip.copy(hidden = !clip.hidden))
+            }
+            ClipMenuAction.SELECT_ADD -> {
+                _selectedClipId.value = clipId
+                _multiSelection.value = _multiSelection.value + clipId
+            }
+            ClipMenuAction.GROUP -> viewModelScope.launch {
+                val ids = _multiSelection.value + clipId
+                if (ids.size < 2) return@launch
+                snapshotForUndo()
+                repository.setGroup(ids, System.currentTimeMillis())
+                _multiSelection.value = emptySet()
+            }
+            ClipMenuAction.UNGROUP -> viewModelScope.launch {
+                val gid = clip.groupId ?: return@launch
+                snapshotForUndo()
+                val members = allClips().filter { it.groupId == gid }.map { it.id }
+                repository.setGroup(members, null)
+            }
+            ClipMenuAction.RIPPLE_DELETE -> viewModelScope.launch {
+                if (clip.locked) return@launch
+                snapshotForUndo()
+                repository.rippleDelete(projectId, clip)
+                if (_selectedClipId.value == clipId) _selectedClipId.value = null
+            }
+            ClipMenuAction.DELETE -> {
+                _selectedClipId.value = clipId
+                deleteSelectedClip()
+            }
+        }
+    }
+
+    fun renameClip(clipId: Long, name: String) {
+        _renameTarget.value = null
+        if (name.isBlank()) return
+        updateClip(clipId) { it.copy(displayName = name.trim()) }
+    }
+
+    fun dismissRename() {
+        _renameTarget.value = null
+    }
+
+    /**
+     * Drops transform keyframes at the playhead, capturing the clip's
+     * current (possibly already-keyframed) values — CapCut's diamond.
+     */
+    fun addKeyframeAtPlayhead(playheadMs: Long) {
+        viewModelScope.launch {
+            val clip = selectedClip() ?: return@launch
+            val timeMs = (playheadMs - clip.timelineStartMs)
+                .coerceIn(0, clip.timelineDurationMs)
+            val existing = keyframesFor(clip.id).groupBy { it.property }
+            val current = KeyframeEngine.transformAt(
+                existing, timeMs,
+                clip.positionX, clip.positionY, clip.scale,
+                clip.rotationDeg, clip.opacity, clip.volume,
+            )
+            val values = mapOf(
+                KeyframeProperty.POSITION_X to current.positionX,
+                KeyframeProperty.POSITION_Y to current.positionY,
+                KeyframeProperty.SCALE to current.scale,
+                KeyframeProperty.ROTATION to current.rotationDeg,
+                KeyframeProperty.OPACITY to current.opacity,
+            )
+            for ((property, value) in values) {
+                // Replace any diamond already sitting at this time.
+                existing[property]?.firstOrNull { kf -> kf.timeMs == timeMs }?.let {
+                    repository.deleteKeyframe(it.id)
+                }
+                repository.addKeyframe(
+                    KeyframeEntity(
+                        clipId = clip.id,
+                        property = property,
+                        timeMs = timeMs,
+                        value = value,
+                        easing = EasingType.EASE_IN_OUT,
+                    )
+                )
+            }
+        }
+    }
+
+    /** Removes all keyframes at one diamond time on the selected clip. */
+    fun removeKeyframesAt(timeMs: Long) {
+        viewModelScope.launch {
+            keyframesForSelected()
+                .filter { it.timeMs == timeMs }
+                .forEach { repository.deleteKeyframe(it.id) }
         }
     }
 
@@ -373,7 +534,7 @@ class EditorViewModel(
     /** Lottie stickers still render as Compose overlays (not in the GL graph yet). */
     fun stickersAt(timelineMs: Long): List<ClipEntity> =
         allClips().filter {
-            it.type == ClipType.STICKER &&
+            it.type == ClipType.STICKER && !it.hidden &&
                 timelineMs in it.timelineStartMs until it.timelineEndMs
         }
 

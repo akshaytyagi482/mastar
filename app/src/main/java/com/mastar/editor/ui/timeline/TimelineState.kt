@@ -26,6 +26,9 @@ class TimelineState(
     /** Current playhead position on the project timeline. */
     var playheadMs by mutableLongStateOf(0L)
 
+    /** Magnetic snapping toggle (CapCut's magnet switch). */
+    var snappingEnabled by androidx.compose.runtime.mutableStateOf(true)
+
     fun msToPx(ms: Long): Float = ms * pxPerMs
 
     fun pxToMs(px: Float): Long = (px / pxPerMs).toLong()
@@ -44,6 +47,7 @@ class TimelineState(
      * (other clips' edges or the playhead) when within [SNAP_THRESHOLD_PX].
      */
     fun snap(candidateMs: Long, snapTargetsMs: List<Long>): Long {
+        if (!snappingEnabled) return candidateMs
         val thresholdMs = pxToMs(SNAP_THRESHOLD_PX)
         var best = candidateMs
         var bestDistance = thresholdMs + 1

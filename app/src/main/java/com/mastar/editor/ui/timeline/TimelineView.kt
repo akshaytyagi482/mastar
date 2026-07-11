@@ -1,6 +1,7 @@
 package com.mastar.editor.ui.timeline
 
 import android.graphics.Paint
+import android.media.MediaMetadataRetriever
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,13 +25,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -38,16 +46,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.media.MediaMetadataRetriever
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
@@ -56,11 +68,15 @@ import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.data.db.TrackType
 import com.mastar.editor.data.db.TrackWithClips
+import com.mastar.editor.engine.audio.Waveform
+import com.mastar.editor.ui.editor.ClipMenuAction
 import com.mastar.editor.ui.theme.ClipAudio
 import com.mastar.editor.ui.theme.ClipOverlay
 import com.mastar.editor.ui.theme.ClipText
+import com.mastar.editor.ui.theme.Saffron
 import com.mastar.editor.ui.theme.TrackLaneColor
 import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
 private val VIDEO_TRACK_HEIGHT = 56.dp
@@ -70,21 +86,30 @@ private val OVERLAY_TRACK_HEIGHT = 22.dp
 private val RULER_HEIGHT = 22.dp
 private val FRAME_WIDTH = 40.dp
 
+/** Everything the timeline can ask the editor to do. */
+data class TimelineActions(
+    val onSelectClip: (Long?) -> Unit,
+    val onMoveClip: (clipId: Long, newTimelineStartMs: Long) -> Unit,
+    val onTrimClip: (clipId: Long, newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) -> Unit,
+    val onSeek: (Long) -> Unit,
+    val onAddAudio: () -> Unit,
+    val onMenuAction: (clipId: Long, action: ClipMenuAction) -> Unit,
+)
+
 /**
  * CapCut-style timeline: fixed centered playhead, content scrolls beneath it,
- * filmstrip thumbnails on video clips, pinch-to-zoom, magnetic drag snapping,
- * and an "+ Add audio" hint lane.
+ * virtualized filmstrip thumbnails (whole clip at any zoom), waveforms on
+ * audio, keyframe diamonds, magnetic snapping with haptics, and a long-press
+ * clip menu.
  */
 @Composable
 fun TimelineView(
     state: TimelineState,
     tracks: List<TrackWithClips>,
     selectedClipId: Long?,
-    onSelectClip: (Long?) -> Unit,
-    onMoveClip: (clipId: Long, newTimelineStartMs: Long) -> Unit,
-    onTrimClip: (clipId: Long, newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) -> Unit,
-    onSeek: (Long) -> Unit,
-    onAddAudio: () -> Unit,
+    multiSelection: Set<Long>,
+    keyframeTimes: (clipId: Long) -> List<Long>,
+    actions: TimelineActions,
     modifier: Modifier = Modifier,
 ) {
     val projectEndMs = tracks.flatMap { it.clips }.maxOfOrNull { it.timelineEndMs } ?: 0L
@@ -99,12 +124,12 @@ fun TimelineView(
                     if (pan.x != 0f) {
                         state.scrollBy(-pan.x, state.msToPx(projectEndMs))
                         state.playheadMs = state.pxToMs(state.scrollPx)
-                        onSeek(state.playheadMs)
+                        actions.onSeek(state.playheadMs)
                     }
                 }
             }
             .pointerInput(Unit) {
-                detectTapGestures(onTap = { onSelectClip(null) })
+                detectTapGestures(onTap = { actions.onSelectClip(null) })
             },
     ) {
         val viewportWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
@@ -115,14 +140,15 @@ fun TimelineView(
             TimeRuler(state, viewportWidthPx)
             Spacer(Modifier.height(6.dp))
 
-            // Overlay lanes (text/stickers) sit above the video like CapCut.
+            // Text/sticker chips sit above everything, like CapCut.
             tracks.filter { it.track.type == TrackType.TEXT || it.track.type == TrackType.STICKER }
                 .sortedByDescending { it.track.zOrder }
                 .forEach { lane ->
                     if (lane.clips.isNotEmpty()) {
                         TrackLane(
                             state, lane.clips, allClips, viewportWidthPx,
-                            OVERLAY_TRACK_HEIGHT, selectedClipId, onSelectClip, onMoveClip, onTrimClip,
+                            OVERLAY_TRACK_HEIGHT, selectedClipId, multiSelection,
+                            keyframeTimes, actions,
                         )
                         Spacer(Modifier.height(3.dp))
                     }
@@ -133,7 +159,8 @@ fun TimelineView(
                 if (pipTrack.clips.isNotEmpty()) {
                     TrackLane(
                         state, pipTrack.clips.sortedBy { it.timelineStartMs }, allClips,
-                        viewportWidthPx, PIP_TRACK_HEIGHT, selectedClipId, onSelectClip, onMoveClip, onTrimClip,
+                        viewportWidthPx, PIP_TRACK_HEIGHT, selectedClipId, multiSelection,
+                        keyframeTimes, actions,
                     )
                     Spacer(Modifier.height(3.dp))
                 }
@@ -143,20 +170,22 @@ fun TimelineView(
             tracks.firstOrNull { it.track.type == TrackType.VIDEO }?.let { videoTrack ->
                 TrackLane(
                     state, videoTrack.clips.sortedBy { it.timelineStartMs }, allClips,
-                    viewportWidthPx, VIDEO_TRACK_HEIGHT, selectedClipId, onSelectClip, onMoveClip, onTrimClip,
+                    viewportWidthPx, VIDEO_TRACK_HEIGHT, selectedClipId, multiSelection,
+                    keyframeTimes, actions,
                 )
             }
             Spacer(Modifier.height(3.dp))
 
-            // Audio track, or CapCut's "+ Add audio" hint when it's empty.
+            // Audio track (waveforms), or CapCut's "+ Add audio" hint.
             val audioTrack = tracks.firstOrNull { it.track.type == TrackType.AUDIO }
             if (hasAudio && audioTrack != null) {
                 TrackLane(
                     state, audioTrack.clips.sortedBy { it.timelineStartMs }, allClips,
-                    viewportWidthPx, AUDIO_TRACK_HEIGHT, selectedClipId, onSelectClip, onMoveClip, onTrimClip,
+                    viewportWidthPx, AUDIO_TRACK_HEIGHT, selectedClipId, multiSelection,
+                    keyframeTimes, actions,
                 )
             } else {
-                AddAudioHint(viewportWidthPx, state, onAddAudio)
+                AddAudioHint(viewportWidthPx, state, actions.onAddAudio)
             }
         }
 
@@ -264,16 +293,17 @@ private fun TrackLane(
     clips: List<ClipEntity>,
     allClips: List<ClipEntity>,
     viewportWidthPx: Float,
-    laneHeight: androidx.compose.ui.unit.Dp,
+    laneHeight: Dp,
     selectedClipId: Long?,
-    onSelectClip: (Long?) -> Unit,
-    onMoveClip: (clipId: Long, newTimelineStartMs: Long) -> Unit,
-    onTrimClip: (clipId: Long, newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) -> Unit,
+    multiSelection: Set<Long>,
+    keyframeTimes: (clipId: Long) -> List<Long>,
+    actions: TimelineActions,
 ) {
     Box(
         Modifier
             .fillMaxWidth()
             .height(laneHeight)
+            .zIndex(1f)
     ) {
         clips.forEach { clip ->
             key(clip.id) {
@@ -282,10 +312,10 @@ private fun TrackLane(
                     clip = clip,
                     viewportWidthPx = viewportWidthPx,
                     isSelected = clip.id == selectedClipId,
+                    isMultiSelected = clip.id in multiSelection,
+                    keyframeTimesMs = keyframeTimes(clip.id),
                     snapTargets = snapTargetsFor(clip, allClips, state),
-                    onSelect = { onSelectClip(clip.id) },
-                    onMove = { newStart -> onMoveClip(clip.id, newStart) },
-                    onTrim = { ss, se, ts -> onTrimClip(clip.id, ss, se, ts) },
+                    actions = actions,
                 )
             }
         }
@@ -312,12 +342,14 @@ private fun ClipView(
     clip: ClipEntity,
     viewportWidthPx: Float,
     isSelected: Boolean,
+    isMultiSelected: Boolean,
+    keyframeTimesMs: List<Long>,
     snapTargets: List<Long>,
-    onSelect: () -> Unit,
-    onMove: (Long) -> Unit,
-    onTrim: (newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) -> Unit,
+    actions: TimelineActions,
 ) {
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+    var menuOpen by remember(clip.id) { mutableStateOf(false) }
     // Live gesture offsets in ms; committed to the DB only on drag end so
     // Room writes never happen on the gesture hot path.
     var dragOffsetMs by remember(clip.id) { mutableFloatStateOf(0f) }
@@ -326,7 +358,6 @@ private fun ClipView(
 
     val minDurationMs = 100f
 
-    // Clamp live trim offsets against the source's real bounds.
     fun clampedLeft(): Long {
         val maxRight = clip.timelineDurationMs - minDurationMs
         val minLeft = -(clip.sourceStartMs / clip.speed)
@@ -336,7 +367,8 @@ private fun ClipView(
     fun clampedRight(): Long {
         val minLeft = -(clip.timelineDurationMs - minDurationMs)
         val sourceHeadroom =
-            if (clip.sourceDurationMs > 0) clip.sourceDurationMs - clip.sourceEndMs else Long.MAX_VALUE / 2
+            if (clip.sourceDurationMs > 0) clip.sourceDurationMs - clip.sourceEndMs
+            else Long.MAX_VALUE / 2
         val maxRight = sourceHeadroom / clip.speed
         return trimRightMs.coerceIn(minLeft, maxRight.toFloat()).toLong()
     }
@@ -348,13 +380,17 @@ private fun ClipView(
     val widthPx = state.msToPx(liveDurationMs)
     val widthDp = with(density) { widthPx.coerceAtLeast(8f).toDp() }
 
+    // Cull fully offscreen clips — nothing offscreen composes or decodes.
+    if (startPx > viewportWidthPx || startPx + widthPx < 0f) return
+
     fun commitTrim() {
         val left = clampedLeft()
         val right = clampedRight()
         trimLeftMs = 0f
         trimRightMs = 0f
         if (left == 0L && right == 0L) return
-        onTrim(
+        actions.onTrimClip(
+            clip.id,
             clip.sourceStartMs + (left * clip.speed).toLong(),
             clip.sourceEndMs + (right * clip.speed).toLong(),
             clip.timelineStartMs + left,
@@ -366,38 +402,255 @@ private fun ClipView(
             .offset { IntOffset(startPx.roundToInt(), 0) }
             .width(widthDp)
             .fillMaxHeight()
-            .clip(RoundedCornerShape(4.dp))
-            .background(clipColor(clip.type))
-            .border(
-                width = if (isSelected) 2.dp else 0.dp,
-                color = if (isSelected) Color.White else Color.Transparent,
-                shape = RoundedCornerShape(4.dp),
-            )
-            .pointerInput(clip.id) {
-                detectTapGestures(onTap = { onSelect() })
-            }
-            .pointerInput(clip.id, snapTargets) {
-                detectDragGestures(
-                    onDragStart = { onSelect() },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        dragOffsetMs += dragAmount.x / state.pxPerMs
-                    },
-                    onDragEnd = {
-                        val rawStart =
-                            (clip.timelineStartMs + dragOffsetMs.toLong()).coerceAtLeast(0)
-                        val snappedStart = state.snap(rawStart, snapTargets)
-                        dragOffsetMs = 0f
-                        onMove(snappedStart)
-                    },
-                    onDragCancel = { dragOffsetMs = 0f },
-                )
-            },
-        contentAlignment = Alignment.CenterStart,
+            .graphicsLayer(alpha = if (clip.hidden) 0.35f else 1f)
     ) {
-        when (clip.type) {
-            ClipType.VIDEO -> Filmstrip(clip, widthDp)
-            ClipType.AUDIO -> Row(
+        // Duration label above the selected clip (CapCut shows "2.84s").
+        if (isSelected) {
+            Text(
+                "%.2fs".format(liveDurationMs / 1000f),
+                color = Color.White,
+                fontSize = 9.sp,
+                modifier = Modifier
+                    .offset(y = (-14).dp)
+                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(3.dp))
+                    .padding(horizontal = 4.dp)
+                    .zIndex(3f),
+            )
+        }
+
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(4.dp))
+                .background(clipColor(clip.type))
+                .border(
+                    width = if (isSelected || isMultiSelected) 2.dp else 0.dp,
+                    color = when {
+                        isMultiSelected -> Saffron
+                        isSelected -> Color.White
+                        else -> Color.Transparent
+                    },
+                    shape = RoundedCornerShape(4.dp),
+                )
+                .pointerInput(clip.id) {
+                    detectTapGestures(
+                        onTap = { actions.onSelectClip(clip.id) },
+                        onLongPress = {
+                            actions.onSelectClip(clip.id)
+                            menuOpen = true
+                        },
+                    )
+                }
+                .pointerInput(clip.id, snapTargets, clip.locked) {
+                    if (clip.locked) return@pointerInput
+                    detectDragGestures(
+                        onDragStart = { actions.onSelectClip(clip.id) },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            dragOffsetMs += dragAmount.x / state.pxPerMs
+                        },
+                        onDragEnd = {
+                            val rawStart =
+                                (clip.timelineStartMs + dragOffsetMs.toLong()).coerceAtLeast(0)
+                            val snappedStart = state.snap(rawStart, snapTargets)
+                            if (snappedStart != rawStart) {
+                                // Snap engaged: give the finger a tick.
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                            dragOffsetMs = 0f
+                            actions.onMoveClip(clip.id, snappedStart)
+                        },
+                        onDragCancel = { dragOffsetMs = 0f },
+                    )
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            when (clip.type) {
+                ClipType.VIDEO, ClipType.IMAGE ->
+                    if (clip.type == ClipType.VIDEO) {
+                        Filmstrip(state, clip, startPx, widthDp, viewportWidthPx)
+                    } else {
+                        AsyncImage(
+                            model = clip.sourceUri,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                ClipType.AUDIO -> AudioWaveform(clip)
+                ClipType.TEXT -> ClipLabel("T  ${previewText(clip)}")
+                ClipType.STICKER -> ClipLabel("★ ${clip.displayName ?: "sticker"}")
+            }
+
+            // Status badges: locked / muted / hidden.
+            Row(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(2.dp)
+            ) {
+                if (clip.locked) Badge(Icons.Default.Lock)
+                if (clip.muted) Badge(Icons.Default.VolumeOff)
+                if (clip.hidden) Badge(Icons.Default.VisibilityOff)
+            }
+
+            // Keyframe diamonds along the clip.
+            keyframeTimesMs.distinct().forEach { timeMs ->
+                val x = state.msToPx(timeMs)
+                Box(
+                    Modifier
+                        .offset { IntOffset(x.roundToInt() - 4, 0) }
+                        .align(Alignment.CenterStart)
+                        .size(8.dp)
+                        .graphicsLayer(rotationZ = 45f)
+                        .background(Color.White)
+                        .border(1.dp, Color.Black.copy(alpha = 0.4f))
+                )
+            }
+
+            if (isSelected && !clip.locked) {
+                TrimHandle(
+                    alignment = Alignment.CenterStart,
+                    onDrag = { deltaPx -> trimLeftMs += deltaPx / state.pxPerMs },
+                    onDone = ::commitTrim,
+                )
+                TrimHandle(
+                    alignment = Alignment.CenterEnd,
+                    onDrag = { deltaPx -> trimRightMs += deltaPx / state.pxPerMs },
+                    onDone = ::commitTrim,
+                )
+            }
+        }
+
+        ClipMenu(
+            expanded = menuOpen,
+            clip = clip,
+            hasMultiSelection = isMultiSelected,
+            onAction = { action ->
+                menuOpen = false
+                actions.onMenuAction(clip.id, action)
+            },
+            onDismiss = { menuOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun ClipMenu(
+    expanded: Boolean,
+    clip: ClipEntity,
+    hasMultiSelection: Boolean,
+    onAction: (ClipMenuAction) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        @Composable
+        fun item(label: String, action: ClipMenuAction) {
+            DropdownMenuItem(text = { Text(label) }, onClick = { onAction(action) })
+        }
+        item("Rename", ClipMenuAction.RENAME)
+        item("Duplicate", ClipMenuAction.DUPLICATE)
+        item(if (clip.locked) "Unlock" else "Lock", ClipMenuAction.LOCK)
+        item(if (clip.muted) "Unmute" else "Mute", ClipMenuAction.MUTE)
+        item(if (clip.hidden) "Show" else "Hide", ClipMenuAction.HIDE)
+        item("Select (multi)", ClipMenuAction.SELECT_ADD)
+        if (hasMultiSelection) item("Group selected", ClipMenuAction.GROUP)
+        if (clip.groupId != null) item("Ungroup", ClipMenuAction.UNGROUP)
+        if (!clip.locked) {
+            item("Ripple delete", ClipMenuAction.RIPPLE_DELETE)
+            item("Delete", ClipMenuAction.DELETE)
+        }
+    }
+}
+
+@Composable
+private fun Badge(icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    Icon(
+        icon,
+        contentDescription = null,
+        tint = Color.White,
+        modifier = Modifier
+            .padding(start = 2.dp)
+            .size(10.dp)
+            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(2.dp)),
+    )
+}
+
+@Composable
+private fun ClipLabel(text: String) {
+    Text(
+        text = text,
+        color = Color.White,
+        fontSize = 10.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(horizontal = 6.dp),
+    )
+}
+
+private fun previewText(clip: ClipEntity): String =
+    clip.displayName
+        ?: com.mastar.editor.engine.effects.TextPayload.fromPayload(clip.payload).text
+
+/**
+ * Virtualized CapCut-style filmstrip: frames are positioned by index and only
+ * the on-screen ones compose — the whole clip stays thumbnailed at ANY zoom
+ * (v0.5 capped at 60 frames and long clips went blank past ~2400dp).
+ */
+@Composable
+private fun Filmstrip(
+    state: TimelineState,
+    clip: ClipEntity,
+    clipStartPx: Float,
+    clipWidth: Dp,
+    viewportWidthPx: Float,
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val frameWidthPx = with(density) { FRAME_WIDTH.toPx() }
+    val clipWidthPx = with(density) { clipWidth.toPx() }
+    val totalFrames = ceil(clipWidthPx / frameWidthPx).toInt().coerceAtLeast(1)
+    val sourceSpanMs = (clip.sourceEndMs - clip.sourceStartMs).coerceAtLeast(1)
+
+    // Only frames intersecting the viewport are composed.
+    val firstVisible = floor((-clipStartPx) / frameWidthPx).toInt().coerceAtLeast(0)
+    val lastVisible = ceil((viewportWidthPx - clipStartPx) / frameWidthPx).toInt()
+        .coerceAtMost(totalFrames - 1)
+
+    Box(Modifier.fillMaxSize()) {
+        for (i in firstVisible..lastVisible) {
+            // Quantize to whole seconds so zoom changes re-hit Coil's cache;
+            // nearest sync frame decode is ~10x faster than exact frames.
+            val frameTimeMs =
+                ((clip.sourceStartMs + sourceSpanMs * i / totalFrames) / 1000) * 1000
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(clip.sourceUri)
+                    .videoFrameMillis(frameTimeMs)
+                    .videoFrameOption(MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    .size(64)
+                    .build(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .offset { IntOffset((i * frameWidthPx).roundToInt(), 0) }
+                    .width(FRAME_WIDTH)
+                    .fillMaxHeight(),
+            )
+        }
+    }
+}
+
+/** Amplitude bars — creators cut on the beats they can see. */
+@Composable
+private fun AudioWaveform(clip: ClipEntity) {
+    val context = LocalContext.current
+    val peaks by produceState<FloatArray?>(initialValue = null, clip.sourceUri) {
+        value = Waveform.peaks(context, clip.sourceUri)
+    }
+    Box(Modifier.fillMaxSize()) {
+        val data = peaks
+        if (data == null || data.isEmpty()) {
+            Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 6.dp),
             ) {
@@ -407,25 +660,27 @@ private fun ClipView(
                     tint = Color.White,
                     modifier = Modifier.size(12.dp),
                 )
-                ClipLabel(clip.sourceUri.substringAfterLast('/'))
+                ClipLabel(clip.displayName ?: clip.sourceUri.substringAfterLast('/'))
             }
-            ClipType.TEXT -> ClipLabel("T  ${previewText(clip.payload)}")
-            ClipType.STICKER -> ClipLabel("★ sticker")
-            ClipType.IMAGE -> ClipLabel("🖼")
-        }
-
-        // CapCut-style trim handles on the selected clip's edges.
-        if (isSelected) {
-            TrimHandle(
-                alignment = Alignment.CenterStart,
-                onDrag = { deltaPx -> trimLeftMs += deltaPx / state.pxPerMs },
-                onDone = ::commitTrim,
-            )
-            TrimHandle(
-                alignment = Alignment.CenterEnd,
-                onDrag = { deltaPx -> trimRightMs += deltaPx / state.pxPerMs },
-                onDone = ::commitTrim,
-            )
+        } else {
+            Canvas(Modifier.fillMaxSize()) {
+                val startBucket = (clip.sourceStartMs / Waveform.BUCKET_MS).toInt()
+                val endBucket = (clip.sourceEndMs / Waveform.BUCKET_MS).toInt()
+                    .coerceAtMost(data.size - 1)
+                val buckets = (endBucket - startBucket).coerceAtLeast(1)
+                val barWidth = size.width / buckets
+                val midY = size.height / 2f
+                for (b in 0 until buckets) {
+                    val amp = data.getOrElse(startBucket + b) { 0f }.coerceIn(0.04f, 1f)
+                    val h = amp * size.height * 0.9f
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.85f),
+                        start = Offset(b * barWidth + barWidth / 2, midY - h / 2),
+                        end = Offset(b * barWidth + barWidth / 2, midY + h / 2),
+                        strokeWidth = (barWidth * 0.6f).coerceAtLeast(1f),
+                    )
+                }
+            }
         }
     }
 }
@@ -463,59 +718,10 @@ private fun androidx.compose.foundation.layout.BoxScope.TrimHandle(
     }
 }
 
-private fun previewText(payload: String?): String =
-    com.mastar.editor.engine.effects.TextPayload.fromPayload(payload).text
-
-@Composable
-private fun ClipLabel(text: String) {
-    Text(
-        text = text,
-        color = Color.White,
-        fontSize = 10.sp,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.padding(horizontal = 6.dp),
-    )
-}
-
-/**
- * CapCut-style filmstrip: evenly spaced frames from the clip's source window,
- * decoded by Coil's video decoder and cached — scrolling stays at 60fps.
- */
-@Composable
-private fun Filmstrip(clip: ClipEntity, clipWidth: androidx.compose.ui.unit.Dp) {
-    val context = LocalContext.current
-    val frameCount = ceil(clipWidth / FRAME_WIDTH).toInt().coerceIn(1, 60)
-    val sourceSpanMs = (clip.sourceEndMs - clip.sourceStartMs).coerceAtLeast(1)
-
-    Row(Modifier.fillMaxSize()) {
-        repeat(frameCount) { i ->
-            // Quantize to whole seconds so zoom changes re-hit Coil's cache,
-            // and grab the nearest sync frame — an order of magnitude faster
-            // than exact-frame seeks on long videos.
-            val frameTimeMs =
-                ((clip.sourceStartMs + sourceSpanMs * i / frameCount) / 1000) * 1000
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(clip.sourceUri)
-                    .videoFrameMillis(frameTimeMs)
-                    .videoFrameOption(MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    .size(64)
-                    .build(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .width(FRAME_WIDTH)
-                    .fillMaxHeight(),
-            )
-        }
-    }
-}
-
 private fun clipColor(type: ClipType): Color = when (type) {
     ClipType.VIDEO -> Color(0xFF2A2A2E)
     ClipType.AUDIO -> ClipAudio.copy(alpha = 0.8f)
-    ClipType.IMAGE -> ClipOverlay
+    ClipType.IMAGE -> Color(0xFF2A2A2E)
     ClipType.TEXT -> ClipText.copy(alpha = 0.85f)
     ClipType.STICKER -> ClipOverlay.copy(alpha = 0.85f)
 }

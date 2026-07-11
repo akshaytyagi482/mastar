@@ -102,10 +102,27 @@ data class ClipEntity(
     val filterIntensity: Float = 1f,
     /** For TEXT clips: the rendered text. For STICKER clips: Lottie asset name. */
     val payload: String? = null,
+    /** User-given clip name (long-press → Rename). */
+    val displayName: String? = null,
+    /** Mute audio without losing the volume setting. */
+    val muted: Boolean = false,
+    /** Locked clips can't be moved, trimmed, or deleted. */
+    val locked: Boolean = false,
+    /** Hidden clips stay on the timeline but don't render (eye toggle). */
+    val hidden: Boolean = false,
+    /** Clips sharing a groupId move together. */
+    val groupId: Long? = null,
+    /** Speed ramp curve (SpeedCurve JSON); overrides [speed] when set. */
+    val speedCurveJson: String? = null,
 ) {
-    /** Duration on the timeline, accounting for speed. */
+    /** Duration on the timeline, accounting for speed (curve-aware). */
     val timelineDurationMs: Long
-        get() = ((sourceEndMs - sourceStartMs) / speed).toLong()
+        get() {
+            val sourceSpanMs = sourceEndMs - sourceStartMs
+            val curve = com.mastar.editor.engine.speed.SpeedCurve.parse(speedCurveJson)
+            return if (curve != null) curve.outputDurationMs(sourceSpanMs)
+            else (sourceSpanMs / speed).toLong()
+        }
 
     val timelineEndMs: Long
         get() = timelineStartMs + timelineDurationMs

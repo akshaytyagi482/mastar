@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Rotate90DegreesCw
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Timeline
 import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
@@ -59,15 +60,19 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -85,6 +90,8 @@ import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.engine.effects.EffectResolver
 import com.mastar.editor.engine.effects.FilterLibrary
 import com.mastar.editor.engine.effects.TextPayload
+import com.mastar.editor.engine.effects.Transitions
+import com.mastar.editor.engine.speed.SpeedCurve
 import com.mastar.editor.engine.export.ExportEngine
 import com.mastar.editor.ui.theme.CharcoalSurface
 import com.mastar.editor.ui.theme.Saffron
@@ -110,6 +117,7 @@ enum class EditorTool(
     FILTER(Icons.Default.Tune, "Filter", true),
     ADJUST(Icons.Default.GraphicEq, "Adjust", true),
     TRANSFORM(Icons.Default.Transform, "Transform", true),
+    KEYFRAME(Icons.Default.Timeline, "Keyframe", true),
     FREEZE(Icons.Default.AcUnit, "Freeze", true),
     TRANSITION(Icons.Default.SwapHoriz, "Transition", true),
     DELETE(Icons.Default.Delete, "Delete", true),
@@ -122,7 +130,7 @@ private val ROOT_TOOLS = listOf(
 private val CLIP_TOOLS = listOf(
     EditorTool.SPLIT, EditorTool.DUPLICATE, EditorTool.SPEED, EditorTool.VOLUME,
     EditorTool.VOICE, EditorTool.FILTER, EditorTool.ADJUST, EditorTool.TRANSFORM,
-    EditorTool.FREEZE, EditorTool.TRANSITION, EditorTool.DELETE,
+    EditorTool.KEYFRAME, EditorTool.FREEZE, EditorTool.TRANSITION, EditorTool.DELETE,
 )
 
 /** CapCut-style aspect presets. */
@@ -241,6 +249,8 @@ fun TransportRow(
     isPlaying: Boolean,
     canUndo: Boolean,
     canRedo: Boolean,
+    snapEnabled: Boolean,
+    onToggleSnap: () -> Unit,
     onPlayPause: () -> Unit,
     onStepFrame: (deltaMs: Long) -> Unit,
     onUndo: () -> Unit,
@@ -288,6 +298,15 @@ fun TransportRow(
             }
         }
         Row(Modifier.align(Alignment.CenterEnd)) {
+            // Magnetic snapping toggle.
+            IconButton(onClick = onToggleSnap) {
+                Text(
+                    "⌇",
+                    color = if (snapEnabled) Saffron else Color.White.copy(alpha = 0.35f),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
             IconButton(onClick = onUndo, enabled = canUndo) {
                 Icon(
                     Icons.AutoMirrored.Filled.Undo,
@@ -357,6 +376,7 @@ fun BottomToolBar(
 fun ToolPanel(
     tool: EditorTool,
     viewModel: EditorViewModel,
+    playheadMs: Long,
     onClose: () -> Unit,
 ) {
     val clip = viewModel.selectedClip() ?: return
@@ -387,14 +407,82 @@ fun ToolPanel(
         }
         when (tool) {
             EditorTool.SPEED -> {
-                var speed by remember(clip.id) { mutableFloatStateOf(clip.speed) }
-                PanelSlider(
-                    label = "${"%.2f".format(speed)}x",
-                    value = speed,
-                    range = 0.25f..4f,
-                    onValue = { speed = it },
-                    onCommit = { viewModel.updateClip(clip.id) { it.copy(speed = speed) } },
+                // Constant speed (disabled while a ramp is active).
+                if (clip.speedCurveJson == null) {
+                    var speed by remember(clip.id) { mutableFloatStateOf(clip.speed) }
+                    PanelSlider(
+                        label = "${"%.2f".format(speed)}x",
+                        value = speed,
+                        range = 0.25f..4f,
+                        onValue = { speed = it },
+                        onCommit = { viewModel.updateClip(clip.id) { it.copy(speed = speed) } },
+                    )
+                }
+                // Speed ramp presets (CapCut's curve speed).
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FilterChip(
+                        selected = clip.speedCurveJson == null,
+                        onClick = {
+                            viewModel.updateClip(clip.id) { it.copy(speedCurveJson = null) }
+                        },
+                        label = { Text("Constant") },
+                    )
+                    SpeedCurve.PRESETS.forEach { (name, curve) ->
+                        FilterChip(
+                            selected = clip.speedCurveJson == curve.toJson(),
+                            onClick = {
+                                viewModel.updateClip(clip.id) {
+                                    it.copy(speedCurveJson = curve.toJson())
+                                }
+                            },
+                            label = { Text(name) },
+                        )
+                    }
+                }
+                // Interactive ramp graph: drag points vertically.
+                SpeedCurve.parse(clip.speedCurveJson)?.let { curve ->
+                    SpeedRampGraph(
+                        curve = curve,
+                        onCommit = { newCurve ->
+                            viewModel.updateClip(clip.id) {
+                                it.copy(speedCurveJson = newCurve.toJson())
+                            }
+                        },
+                    )
+                }
+            }
+            EditorTool.KEYFRAME -> {
+                val allKeyframes by viewModel.keyframes.collectAsState()
+                val clipKeyframes = allKeyframes.filter { it.clipId == clip.id }
+                Text(
+                    "Diamonds animate position, scale, rotation and opacity between points.",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 10.sp,
                 )
+                TextButton(onClick = { viewModel.addKeyframeAtPlayhead(playheadMs) }) {
+                    Text("◆  Add keyframe at playhead", color = Saffron)
+                }
+                if (clipKeyframes.isNotEmpty()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        clipKeyframes.map { it.timeMs }.distinct().sorted().forEach { t ->
+                            FilterChip(
+                                selected = false,
+                                onClick = { viewModel.removeKeyframesAt(t) },
+                                label = { Text("◆ %.1fs ✕".format(t / 1000f)) },
+                            )
+                        }
+                    }
+                }
             }
             EditorTool.VOLUME -> {
                 var volume by remember(clip.id) { mutableFloatStateOf(clip.volume) }
@@ -556,6 +644,74 @@ fun ToolPanel(
     }
 }
 
+/**
+ * Interactive speed ramp: drag control points vertically to shape the curve
+ * (top = 4x, bottom = 0.25x). Commits on release.
+ */
+@Composable
+fun SpeedRampGraph(
+    curve: SpeedCurve,
+    onCommit: (SpeedCurve) -> Unit,
+) {
+    var points by remember(curve.toJson()) { mutableStateOf(curve.points) }
+
+    fun speedToY(speed: Float, h: Float): Float {
+        // Log-ish mapping so 1x sits mid-graph.
+        val norm = ((speed - 0.25f) / (4f - 0.25f)).coerceIn(0f, 1f)
+        return h * (1f - norm)
+    }
+
+    fun yToSpeed(y: Float, h: Float): Float {
+        val norm = (1f - y / h).coerceIn(0f, 1f)
+        return 0.25f + norm * (4f - 0.25f)
+    }
+
+    androidx.compose.foundation.Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(96.dp)
+            .padding(vertical = 4.dp)
+            .pointerInput(curve.toJson()) {
+                detectDragGestures(
+                    onDrag = { change, _ ->
+                        change.consume()
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        val nearest = points.indices.minByOrNull { i ->
+                            kotlin.math.abs(points[i].first * w - change.position.x)
+                        } ?: return@detectDragGestures
+                        val updated = points.toMutableList()
+                        updated[nearest] = updated[nearest].first to
+                            yToSpeed(change.position.y, h)
+                        points = updated
+                    },
+                    onDragEnd = { onCommit(SpeedCurve.fromPoints(points)) },
+                    onDragCancel = { onCommit(SpeedCurve.fromPoints(points)) },
+                )
+            },
+    ) {
+        val w = size.width
+        val h = size.height
+        // 1x reference line.
+        val oneY = speedToY(1f, h)
+        drawLine(Color.White.copy(alpha = 0.2f), Offset(0f, oneY), Offset(w, oneY), 1f)
+        // Curve polyline.
+        for (i in 0 until points.size - 1) {
+            drawLine(
+                Saffron,
+                Offset(points[i].first * w, speedToY(points[i].second, h)),
+                Offset(points[i + 1].first * w, speedToY(points[i + 1].second, h)),
+                3f,
+            )
+        }
+        // Draggable control points.
+        points.forEach { (f, s) ->
+            drawCircle(Color.White, 8f, Offset(f * w, speedToY(s, h)))
+            drawCircle(Saffron, 5f, Offset(f * w, speedToY(s, h)))
+        }
+    }
+}
+
 @Composable
 private fun PanelSlider(
     label: String,
@@ -634,13 +790,8 @@ private fun ChipRow(
     }
 }
 
-/** id -> display name; ids match assets/transitions/<id>.glsl */
-private val TRANSITIONS = listOf(
-    "fade" to "Fade",
-    "directionalwipe" to "Wipe",
-    "circleopen" to "Circle",
-    "wiperight" to "Slide",
-)
+/** Engine-rendered transitions (visible in preview AND export). */
+private val TRANSITIONS = Transitions.TRANSITIONS.map { it.id to it.displayName }
 
 /** CapCut-style export sheet: resolution + quality. */
 @Composable

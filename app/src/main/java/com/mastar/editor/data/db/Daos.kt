@@ -123,6 +123,15 @@ interface KeyframeDao {
     @Query("SELECT * FROM keyframes WHERE clipId = :clipId ORDER BY timeMs")
     fun observeKeyframesForClip(clipId: Long): Flow<List<KeyframeEntity>>
 
+    @Query(
+        """SELECT keyframes.* FROM keyframes
+           INNER JOIN clips ON keyframes.clipId = clips.id
+           INNER JOIN tracks ON clips.trackId = tracks.id
+           WHERE tracks.projectId = :projectId
+           ORDER BY keyframes.timeMs"""
+    )
+    fun observeKeyframesForProject(projectId: Long): Flow<List<KeyframeEntity>>
+
     @Query("DELETE FROM keyframes WHERE id = :keyframeId")
     suspend fun deleteKeyframe(keyframeId: Long)
 }

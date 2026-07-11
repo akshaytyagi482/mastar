@@ -1,4 +1,4 @@
-# Mastar Feature Matrix (v0.3.0)
+# Mastar Feature Matrix (v0.6.0)
 
 Target: full CapCut parity **minus Pro features and AI features**.
 ✅ shipped · 🔶 partial · ⏳ staged (architecture ready, next milestones) · ✖️ excluded by design
@@ -19,6 +19,13 @@ Target: full CapCut parity **minus Pro features and AI features**.
 | Feature | Status |
 |---|---|
 | Split / Delete / Duplicate (copy-paste equivalent) | ✅ |
+| Ripple delete (long-press menu) | ✅ |
+| Insert mode (overlapping drops push clips apart) | ✅ |
+| Multi-select + Group / Ungroup (grouped clips move together) | ✅ |
+| Lock / Mute / Hide / Rename per clip (long-press menu) | ✅ |
+| Snap haptic tick + snapping toggle | ✅ |
+| Audio waveforms on clips (real PCM peaks, cached) | ✅ |
+| Duration label above selected clip | ✅ |
 | Trim by edge-drag handles | ✅ |
 | Multi-track (video / audio / text / sticker lanes) | ✅ |
 | Drag clips with magnetic snapping (playhead + clip edges) | ✅ |
@@ -26,14 +33,14 @@ Target: full CapCut parity **minus Pro features and AI features**.
 | Frame stepping (±1 frame buttons) | ✅ |
 | Snap to playhead | ✅ |
 | Ripple on freeze-frame insert | ✅ |
-| Ripple delete, lock/hide/mute track, clip grouping | ⏳ |
 
 ## 3. Video Speed
 | Feature | Status |
 |---|---|
 | Speed 0.25x–4x with pitch-corrected audio (Sonic) | ✅ |
+| Curve speed / speed ramps: presets + draggable graph (video+audio via SpeedProvider) | ✅ |
 | Freeze frame (frame grab → still inserted with ripple) | ✅ |
-| Curve speed, reverse | ⏳ (reverse needs re-encode pipeline) |
+| Reverse | ⏳ (needs re-encode pipeline) |
 
 ## 4. Crop & Canvas
 | Feature | Status |
@@ -43,13 +50,16 @@ Target: full CapCut parity **minus Pro features and AI features**.
 | Position offset, crop rectangle, background blur/color | ⏳ (GL compositor milestone) |
 
 ## 5. Keyframes
-Interpolation engine (linear + cubic bezier) is built and unit-tested; DB
-stores diamonds per property. Timeline UI + per-frame GL application: ⏳.
+✅ Shipped: Keyframe tool drops diamonds at the playhead (position, scale,
+rotation, opacity), diamonds render on clips, and the engine animates them
+per-frame in preview AND export (MatrixTransformation/RgbMatrix for the main
+track, animated compositor placement for PIP). Eased with cubic bezier.
 
 ## 6. Transitions
-4 MIT gl-transitions shaders bundled + C++ GL host compiled + per-clip
-selection & duration persist. Cross-clip rendering in preview/export: ⏳
-(SurfaceTexture pipeline — the next engine milestone).
+✅ Visible in preview and export: Fade (dip-to-black), Flash, Zoom in/out,
+Slide left/right — rendered as time-varying GPU ramps at clip boundaries.
+Cross-frame GLSL transitions (wipe/circle sampling both clips at once) still
+need the overlap compositor: ⏳ (C++ shader host stays ready).
 
 ## 7. Filters
 | Feature | Status |
@@ -89,10 +99,11 @@ Bundled Lottie animated stickers (offline): ✅. Emoji/GIF/custom import: ⏳.
 | Voice recording, noise reduction, EQ, beat markers, stereo balance | ⏳ |
 
 ## 15–24. Compositing (Blend/Chroma/Mask/PIP/Motion/Frames)
-Opacity per clip: ✅ (preview + export). The rest — blend modes, chroma key,
-masks, PIP video, motion blur, frames/borders — all depend on the multi-layer
-GL compositor: ⏳ (single biggest next milestone; the OpenGL/NDK foundation
-for it is already in the app).
+✅ PIP overlays (video/photo over the main track): position by dragging in the
+preview, scale/rotation/opacity, keyframable, own timeline lane.
+✅ Opacity per clip (preview + export).
+⏳ Blend modes, chroma key, masks, motion blur, frames/borders — these need
+the cross-frame GL stage (C++ shader host is compiled and waiting).
 
 ## 25–26. Image & Per-Clip Adjustments
 Photo import as timeline stills: ✅ (plays in preview, encodes in export).
@@ -118,7 +129,7 @@ stickers, fonts (system). Music/SFX library: ⏳ (CC0 pack curation).
 
 ## 30. Mobile-Specific
 Gesture editing, multi-touch timeline scaling, drag-and-drop clips,
-quick duplicate: ✅. Favorites, clip grouping: ⏳.
+quick duplicate, clip grouping, snap haptics: ✅. Favorites: ⏳.
 
 ---
 

@@ -19,17 +19,20 @@ import androidx.media3.transformer.Effects
 import com.google.common.collect.ImmutableList
 import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
+import com.mastar.editor.data.db.KeyframeEntity
 import com.mastar.editor.engine.audio.Silence
 import com.mastar.editor.engine.effects.EffectResolver
 import com.mastar.editor.engine.effects.TimedTextOverlay
+import com.mastar.editor.engine.keyframe.KeyframeEngine
+import com.mastar.editor.engine.speed.SpeedCurve
 
 /**
  * Builds the Media3 Composition that BOTH the preview (CompositionPlayer)
  * and the export (Transformer) play. One code path = true WYSIWYG.
  *
- * CompositionPlayer constraints honored here (they were the v0.4 black
- * screen): no sequence gaps (real filler media instead — black frames for
- * video, generated silence WAVs for audio) and durationUs set on every item.
+ * CompositionPlayer constraints honored here (each was once a black-screen
+ * bug): no sequence gaps (real filler media instead) and durationUs set on
+ * every item.
  */
 @UnstableApi
 object CompositionFactory {
@@ -40,9 +43,14 @@ object CompositionFactory {
         val overlayClips: List<ClipEntity>,
         val audioClips: List<ClipEntity>,
         val textClips: List<ClipEntity>,
+        /** Keyframe diamonds per clip id (animates transform/opacity). */
+        val keyframesByClip: Map<Long, List<KeyframeEntity>> = emptyMap(),
     )
 
     private const val GAP_IMAGE_URI = "asset:///gap_black.png"
+
+    /** Half the transition plays on each side of the cut. */
+    private const val MIN_TRANSITION_WINDOW_US = 100_000L
 
     fun build(
         context: Context,
@@ -55,9 +63,11 @@ object CompositionFactory {
 
         val mainSequence = videoSequence(
             layers.videoClips.sortedBy { it.timelineStartMs },
+            layers.keyframesByClip,
             outWidth, outHeight,
             includeTransform = true,
-            muteAudio = false,
+            muteAll = false,
+            withTransitions = true,
         )
 
         val overlayClips =
@@ -69,9 +79,10 @@ object CompositionFactory {
             if (overlayClips.isNotEmpty()) {
                 add(
                     videoSequence(
-                        overlayClips, outWidth, outHeight,
+                        overlayClips, layers.keyframesByClip, outWidth, outHeight,
                         includeTransform = false,
-                        muteAudio = true,
+                        muteAll = true,
+                        withTransitions = false,
                     )
                 )
             }
@@ -83,18 +94,21 @@ object CompositionFactory {
 
         return Composition.Builder(sequences)
             .setEffects(compositionEffects(layers.textClips, textPxPerSp))
-            .setVideoCompositorSettings(PipCompositorSettings(overlayClips))
+            .setVideoCompositorSettings(
+                PipCompositorSettings(overlayClips, layers.keyframesByClip)
+            )
             .build()
     }
 
     /**
-     * Maps each overlay clip's position/scale/opacity onto the compositor.
-     * Presentation time is absolute composition time, so the clip lookup is
-     * a direct timeline query. Gap-filler frames between overlay clips miss
-     * the lookup and render fully transparent.
+     * Maps each overlay clip's (possibly keyframed) position/scale/opacity
+     * onto the compositor. Presentation time is absolute composition time.
+     * Gap-filler frames between overlay clips miss the lookup and render
+     * fully transparent.
      */
     private class PipCompositorSettings(
         private val overlayClips: List<ClipEntity>,
+        private val keyframesByClip: Map<Long, List<KeyframeEntity>>,
     ) : VideoCompositorSettings {
 
         override fun getOutputSize(inputSizes: List<Size>): Size = inputSizes[0]
@@ -107,13 +121,20 @@ object CompositionFactory {
                 timeMs in it.timelineStartMs until it.timelineEndMs
             } ?: return StaticOverlaySettings.Builder().setAlphaScale(0f).build()
 
+            val kfs = keyframesByClip[clip.id].orEmpty().groupBy { it.property }
+            val t = KeyframeEngine.transformAt(
+                kfs, timeMs - clip.timelineStartMs,
+                clip.positionX, clip.positionY, clip.scale,
+                clip.rotationDeg, clip.opacity, clip.volume,
+            )
+
             // positionX/Y are 0..1 (top-left origin); NDC anchors are -1..1, y-up.
-            val ndcX = clip.positionX * 2f - 1f
-            val ndcY = -(clip.positionY * 2f - 1f)
+            val ndcX = t.positionX * 2f - 1f
+            val ndcY = -(t.positionY * 2f - 1f)
             return StaticOverlaySettings.Builder()
-                .setAlphaScale(clip.opacity.coerceIn(0f, 1f))
-                .setScale(clip.scale, clip.scale)
-                .setRotationDegrees(-clip.rotationDeg)
+                .setAlphaScale(t.opacity.coerceIn(0f, 1f))
+                .setScale(t.scale, t.scale)
+                .setRotationDegrees(-t.rotationDeg)
                 .setBackgroundFrameAnchor(ndcX, ndcY)
                 .setOverlayFrameAnchor(0f, 0f)
                 .build()
@@ -123,18 +144,42 @@ object CompositionFactory {
     /** A video-lane sequence: clips at exact offsets, black frames in gaps. */
     private fun videoSequence(
         clips: List<ClipEntity>,
+        keyframesByClip: Map<Long, List<KeyframeEntity>>,
         outWidth: Int,
         outHeight: Int,
         includeTransform: Boolean,
-        muteAudio: Boolean,
+        muteAll: Boolean,
+        withTransitions: Boolean,
     ): EditedMediaItemSequence {
         val builder = EditedMediaItemSequence.Builder()
         var cursorMs = 0L
-        for (clip in clips) {
+        for ((index, clip) in clips.withIndex()) {
             val gapMs = clip.timelineStartMs - cursorMs
             if (gapMs > 0) builder.addItem(blackFiller(gapMs, outWidth, outHeight))
+
+            val prev = if (withTransitions) clips.getOrNull(index - 1) else null
+            val headTransition = prev?.transitionId?.takeIf { prev.transitionDurationMs > 0 }
+            val headWindowUs = if (headTransition != null) {
+                (prev.transitionDurationMs * 1000 / 2).coerceAtLeast(MIN_TRANSITION_WINDOW_US)
+            } else 0L
+            val tailTransition =
+                if (withTransitions && index < clips.lastIndex) {
+                    clip.transitionId?.takeIf { clip.transitionDurationMs > 0 }
+                } else null
+            val tailWindowUs = if (tailTransition != null) {
+                (clip.transitionDurationMs * 1000 / 2).coerceAtLeast(MIN_TRANSITION_WINDOW_US)
+            } else 0L
+
+            val renderContext = EffectResolver.RenderContext(
+                keyframes = keyframesByClip[clip.id].orEmpty(),
+                itemDurationUs = clip.timelineDurationMs * 1000,
+                tailTransitionId = tailTransition,
+                tailWindowUs = tailWindowUs,
+                headTransitionId = headTransition,
+                headWindowUs = headWindowUs,
+            )
             builder.addItem(
-                clip.toEditedMediaItem(outWidth, outHeight, includeTransform, muteAudio)
+                clip.toEditedMediaItem(outWidth, outHeight, includeTransform, muteAll, renderContext)
             )
             cursorMs = clip.timelineEndMs
         }
@@ -170,10 +215,11 @@ object CompositionFactory {
         context: Context,
         audioClips: List<ClipEntity>,
     ): EditedMediaItemSequence? {
-        if (audioClips.isEmpty()) return null
+        val audible = audioClips.filter { !it.muted }
+        if (audible.isEmpty()) return null
         val builder = EditedMediaItemSequence.Builder()
         var cursorMs = 0L
-        for (clip in audioClips.sortedBy { it.timelineStartMs }) {
+        for (clip in audible.sortedBy { it.timelineStartMs }) {
             val gapMs = clip.timelineStartMs - cursorMs
             if (gapMs > 0) {
                 builder.addItem(
@@ -227,7 +273,8 @@ object CompositionFactory {
         outWidth: Int,
         outHeight: Int,
         includeTransform: Boolean,
-        muteAudio: Boolean = false,
+        muteAudio: Boolean,
+        renderContext: EffectResolver.RenderContext,
     ): EditedMediaItem {
         val isImage = type == ClipType.IMAGE
 
@@ -243,9 +290,20 @@ object CompositionFactory {
             )
         }
 
+        val curve = SpeedCurve.parse(speedCurveJson)
         val videoEffects = buildList {
-            if (speed != 1f && !isImage) add(SpeedChangeEffect(speed))
-            addAll(EffectResolver.videoEffectsFor(this@toEditedMediaItem, includeTransform))
+            if (!isImage) {
+                if (curve != null) {
+                    add(SpeedChangeEffect(curve.toSpeedProvider(sourceEndMs - sourceStartMs)))
+                } else if (speed != 1f) {
+                    add(SpeedChangeEffect(speed))
+                }
+            }
+            addAll(
+                EffectResolver.videoEffectsFor(
+                    this@toEditedMediaItem, includeTransform, renderContext
+                )
+            )
             add(
                 Presentation.createForWidthAndHeight(
                     outWidth, outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
@@ -253,11 +311,11 @@ object CompositionFactory {
             )
         }
 
+        val dropAudio = isImage || muteAudio || muted
         val builder = EditedMediaItem.Builder(mediaItemBuilder.build())
             .setEffects(
                 Effects(
-                    if (isImage || muteAudio) emptyList()
-                    else EffectResolver.audioProcessorsFor(this),
+                    if (dropAudio) emptyList() else EffectResolver.audioProcessorsFor(this),
                     videoEffects,
                 )
             )
@@ -266,7 +324,7 @@ object CompositionFactory {
         } else {
             builder.setDurationUs(fullSourceDurationUs())
         }
-        if (muteAudio && !isImage) builder.setRemoveAudio(true)
+        if (dropAudio && !isImage) builder.setRemoveAudio(true)
         return builder.build()
     }
 }
