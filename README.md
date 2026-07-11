@@ -55,18 +55,16 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.8.2.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.8.2.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.9.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.9.0.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
 3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
 
-> v0.8.0 — multi-lane overlays (video over video over video, lanes appear
-> automatically), photo/text/sticker/filter clips stretch to any length,
-> overlays keep their true aspect ratio (no more square crop), text is fully
-> transformable + keyframable, CapCut-style Graphs (8 easing curves with
-> thumbnails), audio waveform fixes, smoother preview (debounced rebuilds).
-> See [docs/FEATURES.md](docs/FEATURES.md).
+> v0.9.0 — TRUE cross-clip transitions: both clips play at once and blend
+> into each other like CapCut. Cross fade, Push ←/→, Zoom, Spin (plus Flash).
+> Applying one overlaps the clips (the edit gets shorter by the transition,
+> exactly like CapCut) and a ⧓ marker shows on the clip. Preview = export.
 
 ## Building
 

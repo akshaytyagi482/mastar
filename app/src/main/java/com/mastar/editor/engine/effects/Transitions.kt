@@ -19,16 +19,52 @@ object Transitions {
     data class TransitionInfo(val id: String, val displayName: String)
 
     val TRANSITIONS = listOf(
-        TransitionInfo("fade", "Fade"),
+        TransitionInfo("fade", "Cross fade"),
+        TransitionInfo("slideleft", "Push ←"),
+        TransitionInfo("slideright", "Push →"),
+        TransitionInfo("zoomin", "Zoom"),
+        TransitionInfo("spin", "Spin"),
         TransitionInfo("flash", "Flash"),
-        TransitionInfo("zoomin", "Zoom in"),
-        TransitionInfo("zoomout", "Zoom out"),
-        TransitionInfo("slideleft", "Slide ←"),
-        TransitionInfo("slideright", "Slide →"),
     )
 
-    /** Full transition length stored on the clip; each side plays this window. */
+    /** Flash is a gain ramp at the cut; everything else truly overlaps. */
+    fun overlaps(id: String?): Boolean = id != null && id != "flash"
+
+    /** Full transition length stored on the clip. */
     const val DEFAULT_DURATION_MS = 600L
+
+    /**
+     * Compositor placement for the INCOMING clip's head during a true
+     * cross-clip transition: at progress 0 the outgoing clip owns the frame,
+     * at 1 the incoming clip fully covers it. Both clips are live — this is
+     * the CapCut overlap look.
+     */
+    fun crossSettings(
+        id: String,
+        progress: Float,
+    ): androidx.media3.effect.StaticOverlaySettings {
+        val p = progress.coerceIn(0f, 1f)
+        val b = androidx.media3.effect.StaticOverlaySettings.Builder()
+        when (id) {
+            "slideleft" -> {
+                // Incoming pushes in from the right, fully opaque.
+                b.setAlphaScale(1f).setBackgroundFrameAnchor(2f * (1f - p), 0f)
+            }
+            "slideright" -> {
+                b.setAlphaScale(1f).setBackgroundFrameAnchor(-2f * (1f - p), 0f)
+            }
+            "zoomin" -> {
+                val sc = 0.4f + 0.6f * p
+                b.setAlphaScale(p).setScale(sc, sc)
+            }
+            "spin" -> {
+                val sc = 0.3f + 0.7f * p
+                b.setAlphaScale(p).setScale(sc, sc).setRotationDegrees(180f * (1f - p))
+            }
+            else -> b.setAlphaScale(p) // cross fade
+        }
+        return b.build()
+    }
 
     /** Linear 0→1 progress inside [windowStartUs, windowEndUs]. */
     private fun progress(timeUs: Long, windowStartUs: Long, windowEndUs: Long): Float {
@@ -87,7 +123,7 @@ object Transitions {
             "slideright" -> listOf(
                 matrixEffect { m, t -> m.postTranslate(2f * progress(t, start, end), 0f) }
             )
-            else -> listOf(gainEffect { t -> 1f - progress(t, start, end) }) // fade + legacy
+            else -> listOf(gainEffect { t -> 1f - progress(t, start, end) }) // fade/spin/legacy
         }
     }
 

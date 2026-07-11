@@ -497,6 +497,20 @@ private fun ClipView(
                 ClipType.FILTER -> ClipLabel("◐ ${clip.displayName ?: clip.filterId ?: "filter"}")
             }
 
+            // Transition marker at the outgoing edge.
+            if (clip.transitionId != null) {
+                Text(
+                    "⧓",
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(1.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(3.dp))
+                        .padding(horizontal = 2.dp),
+                )
+            }
+
             // Status badges: locked / muted / hidden.
             Row(
                 Modifier

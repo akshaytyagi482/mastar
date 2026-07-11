@@ -696,19 +696,19 @@ fun ToolPanel(
                     },
                 )
             }
-            EditorTool.TRANSITION -> ChipRow(
-                options = TRANSITIONS,
-                selectedId = clip.transitionId,
-                onSelect = { id ->
-                    viewModel.updateClip(clip.id) {
-                        it.copy(
-                            transitionId = id,
-                            transitionDurationMs =
-                                if (id == null) 0 else Transitions.DEFAULT_DURATION_MS,
-                        )
-                    }
-                },
-            )
+            EditorTool.TRANSITION -> {
+                Text(
+                    "Cross transitions overlap the clips (the timeline gets " +
+                        "shorter by the transition, like CapCut).",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 10.sp,
+                )
+                ChipRow(
+                    options = TRANSITIONS,
+                    selectedId = clip.transitionId,
+                    onSelect = { id -> viewModel.setTransition(clip.id, id) },
+                )
+            }
             else -> Unit
         }
     }

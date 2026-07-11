@@ -477,6 +477,60 @@ class EditorViewModel(
         }
     }
 
+    /**
+     * Applies a transition on the cut AFTER [clipId], CapCut-style: cross
+     * transitions overlap the clips, so everything after the cut ripples
+     * left by the transition duration (and back when removed/changed).
+     */
+    fun setTransition(clipId: Long, transitionId: String?) {
+        viewModelScope.launch {
+            val clip = clipById(clipId) ?: return@launch
+            if (clip.locked) return@launch
+            val trackClips = project.value?.tracks
+                ?.firstOrNull { it.track.id == clip.trackId }
+                ?.clips?.sortedBy { it.timelineStartMs }.orEmpty()
+            val next = trackClips.firstOrNull {
+                it.id != clip.id && it.timelineStartMs >= clip.timelineStartMs + 1
+            }
+
+            val oldOverlap =
+                if (com.mastar.editor.engine.effects.Transitions.overlaps(clip.transitionId)) {
+                    clip.transitionDurationMs
+                } else 0L
+            val newW = when {
+                transitionId == null -> 0L
+                next == null -> com.mastar.editor.engine.effects.Transitions.DEFAULT_DURATION_MS
+                else -> minOf(
+                    com.mastar.editor.engine.effects.Transitions.DEFAULT_DURATION_MS,
+                    clip.timelineDurationMs / 2,
+                    next.timelineDurationMs / 2,
+                ).coerceAtLeast(200L)
+            }
+            val newOverlap =
+                if (com.mastar.editor.engine.effects.Transitions.overlaps(transitionId) &&
+                    next != null
+                ) newW else 0L
+
+            snapshotForUndo()
+            repository.updateClip(
+                clip.copy(
+                    transitionId = transitionId,
+                    transitionDurationMs = if (transitionId == null) 0 else newW,
+                )
+            )
+            val delta = newOverlap - oldOverlap
+            if (delta != 0L) {
+                // Ripple: overlap grows -> later clips move left; shrinks -> right.
+                repository.shiftTrackClipsFrom(
+                    projectId, clip.trackId,
+                    fromMs = clip.timelineEndMs - oldOverlap,
+                    deltaMs = -delta,
+                    excludeClipId = clip.id,
+                )
+            }
+        }
+    }
+
     /** Retimes a diamond: moves every keyframe at [fromMs] to [toMs]. */
     fun moveKeyframeDiamond(clipId: Long, fromMs: Long, toMs: Long) {
         viewModelScope.launch {

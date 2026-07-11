@@ -39,6 +39,21 @@ class TimelineOpsTest {
     }
 
     @Test
+    fun `transition overlap is not pushed apart`() {
+        val a = clip(1, 0).copy(transitionId = "fade", transitionDurationMs = 600)
+        val b = clip(2, 1400) // overlaps A (0..2000) by 600 — legitimate
+        assertTrue(TimelineOps.resolveOverlaps(listOf(a, b)).isEmpty())
+    }
+
+    @Test
+    fun `overlap beyond the transition window is still resolved`() {
+        val a = clip(1, 0).copy(transitionId = "fade", transitionDurationMs = 600)
+        val b = clip(2, 800) // 1200ms overlap > 600 allowed
+        val moved = TimelineOps.resolveOverlaps(listOf(a, b))
+        assertEquals(1400, moved.first { it.id == 2L }.timelineStartMs)
+    }
+
+    @Test
     fun `ripple delete closes the hole`() {
         val deleted = clip(2, 2000)
         val clips = listOf(clip(1, 0), deleted, clip(3, 4000), clip(4, 7000))

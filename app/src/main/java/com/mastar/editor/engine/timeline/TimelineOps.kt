@@ -19,12 +19,19 @@ object TimelineOps {
         )
         val moved = mutableListOf<ClipEntity>()
         var cursorMs = 0L
+        var allowedOverlapMs = 0L
         for (clip in sorted) {
-            val start = maxOf(clip.timelineStartMs, cursorMs)
+            // A cross transition on the previous clip legitimately overlaps
+            // the next clip by its duration — don't push that apart.
+            val start = maxOf(clip.timelineStartMs, cursorMs - allowedOverlapMs)
             if (start != clip.timelineStartMs) {
                 moved.add(clip.copy(timelineStartMs = start))
             }
-            cursorMs = start + clip.timelineDurationMs
+            cursorMs = maxOf(cursorMs, start + clip.timelineDurationMs)
+            allowedOverlapMs =
+                if (com.mastar.editor.engine.effects.Transitions.overlaps(clip.transitionId)) {
+                    clip.transitionDurationMs
+                } else 0L
         }
         return moved
     }

@@ -99,6 +99,8 @@ object EffectResolver {
     fun transformEffectFor(
         clip: ClipEntity,
         keyframes: List<KeyframeEntity> = emptyList(),
+        /** Item time is shifted by this much when the head was trimmed. */
+        timeOffsetMs: Long = 0,
     ): Effect? {
         val transformKfs = keyframes.filter {
             it.property == KeyframeProperty.POSITION_X ||
@@ -125,7 +127,7 @@ object EffectResolver {
         val matrix = Matrix()
         return MatrixTransformation { presentationTimeUs ->
             val t = KeyframeEngine.transformAt(
-                byProperty, presentationTimeUs / 1000,
+                byProperty, presentationTimeUs / 1000 + timeOffsetMs,
                 clip.positionX, clip.positionY, clip.scale,
                 clip.rotationDeg, clip.opacity, clip.volume,
             )

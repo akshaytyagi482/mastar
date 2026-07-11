@@ -116,6 +116,48 @@ class CompositionFactoryTest {
     }
 
     @Test
+    fun `cross transition builds an overlap lane and trims the incoming head`() {
+        val a = videoClip(1, 0, durationMs = 5000)
+            .copy(transitionId = "fade", transitionDurationMs = 600)
+        // CapCut ripple: B overlaps A by the transition duration.
+        val b = videoClip(2, 4400, durationMs = 5000)
+        val layers = CompositionFactory.Layers(
+            videoClips = listOf(a, b),
+            overlayLanes = emptyList(),
+            audioClips = emptyList(),
+            textClips = emptyList(),
+        )
+        assertTrue(CompositionFactory.needsMultipleInputs(layers))
+
+        val composition = CompositionFactory.build(context, layers, 720, 1280)
+        // main + synthetic transition lane
+        assertEquals(2, composition.sequences.size)
+        // main stays contiguous (A + head-trimmed B, no fillers)
+        assertEquals(2, composition.sequences[0].editedMediaItems.size)
+        // transition lane: leading filler + B's head segment
+        val laneItems = composition.sequences[1].editedMediaItems
+        assertEquals(2, laneItems.size)
+        composition.sequences.flatMap { it.editedMediaItems }
+            .forEach { assertTrue(it.durationUs > 0) }
+    }
+
+    @Test
+    fun `flash transition stays a ramp with no overlap lane`() {
+        val a = videoClip(1, 0, durationMs = 5000)
+            .copy(transitionId = "flash", transitionDurationMs = 600)
+        val b = videoClip(2, 5000, durationMs = 5000)
+        val layers = CompositionFactory.Layers(
+            videoClips = listOf(a, b),
+            overlayLanes = emptyList(),
+            audioClips = emptyList(),
+            textClips = emptyList(),
+        )
+        assertTrue(!CompositionFactory.needsMultipleInputs(layers))
+        val composition = CompositionFactory.build(context, layers, 720, 1280)
+        assertEquals(1, composition.sequences.size)
+    }
+
+    @Test
     fun `empty timeline is rejected loudly`() {
         val layers = CompositionFactory.Layers(
             videoClips = emptyList(),

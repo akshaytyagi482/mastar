@@ -167,6 +167,19 @@ class ProjectRepository(private val db: MastarDatabase) {
             }
     }
 
+    /** Shifts same-track clips starting at/after [fromMs] by [deltaMs]. */
+    suspend fun shiftTrackClipsFrom(projectId: Long, trackId: Long, fromMs: Long, deltaMs: Long, excludeClipId: Long) {
+        if (deltaMs == 0L) return
+        val fresh = db.projectDao().projectWithTracks(projectId) ?: return
+        fresh.tracks.firstOrNull { it.track.id == trackId }?.clips
+            ?.filter { it.id != excludeClipId && it.timelineStartMs >= fromMs }
+            ?.forEach { c ->
+                db.clipDao().updateClip(
+                    c.copy(timelineStartMs = (c.timelineStartMs + deltaMs).coerceAtLeast(0))
+                )
+            }
+    }
+
     /** Assigns (or clears, with null) a shared group id. */
     suspend fun setGroup(clipIds: Collection<Long>, groupId: Long?) {
         for (id in clipIds) {
