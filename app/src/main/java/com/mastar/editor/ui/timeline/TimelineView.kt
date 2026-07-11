@@ -62,6 +62,7 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 private val VIDEO_TRACK_HEIGHT = 56.dp
+private val PIP_TRACK_HEIGHT = 40.dp
 private val AUDIO_TRACK_HEIGHT = 32.dp
 private val OVERLAY_TRACK_HEIGHT = 22.dp
 private val RULER_HEIGHT = 22.dp
@@ -124,6 +125,17 @@ fun TimelineView(
                         Spacer(Modifier.height(3.dp))
                     }
                 }
+
+            // PIP overlay layer (video/photo over the main track).
+            tracks.firstOrNull { it.track.type == TrackType.OVERLAY }?.let { pipTrack ->
+                if (pipTrack.clips.isNotEmpty()) {
+                    TrackLane(
+                        state, pipTrack.clips.sortedBy { it.timelineStartMs }, allClips,
+                        viewportWidthPx, PIP_TRACK_HEIGHT, selectedClipId, onSelectClip, onMoveClip, onTrimClip,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                }
+            }
 
             // Main video track with filmstrip thumbnails.
             tracks.firstOrNull { it.track.type == TrackType.VIDEO }?.let { videoTrack ->

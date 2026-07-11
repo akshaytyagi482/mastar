@@ -1,113 +1,117 @@
 package com.mastar.editor.engine.playback
 
 import android.content.Context
-import android.net.Uri
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.ExoPlayer
-import com.mastar.editor.data.db.ClipEntity
-import com.mastar.editor.data.db.ClipType
-import com.mastar.editor.engine.effects.EffectResolver
+import androidx.media3.transformer.CompositionPlayer
+import com.mastar.editor.engine.CompositionFactory
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Timeline preview built on Media3 ExoPlayer.
- *
- * The core trick of the whole app: we never cut files. Each [ClipEntity] is
- * turned into a MediaItem with a ClippingConfiguration — ExoPlayer seeks the
- * untouched source and plays only the [sourceStartMs, sourceEndMs] window.
- * Rebuilding the playlist after an edit is just swapping metadata, so even
- * a ₹12,000 phone re-renders the timeline instantly.
+ * Timeline preview built on Media3 CompositionPlayer: it plays the EXACT
+ * Composition that the export encodes — per-clip filters, adjustments,
+ * transforms, speed, volume, fades, voice effects, PIP overlays, and
+ * burned-in text all render live. No effect swapping mid-playback (that was
+ * v0.3's black-screen bug); every edit rebuilds the composition instead.
  */
 @UnstableApi
-class PreviewEngine(context: Context) {
-
-    val player: ExoPlayer = ExoPlayer.Builder(context)
-        .setSeekBackIncrementMs(1000)
-        .setSeekForwardIncrementMs(1000)
-        .build()
-
-    private var timelineClips: List<ClipEntity> = emptyList()
-
-    init {
-        // Per-clip color filters: swap the GPU effect chain as playback
-        // crosses clip boundaries. Same effects as export — WYSIWYG.
-        player.addListener(object : Player.Listener {
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                applyFilterForIndex(player.currentMediaItemIndex)
-            }
-        })
-    }
+class PreviewEngine(private val context: Context) {
 
     /**
-     * Rebuilds the preview playlist from the main video track's clips.
-     * Clips must be sorted by [ClipEntity.timelineStartMs].
+     * The active player. Rebuilt (not mutated) on every timeline change —
+     * CompositionPlayer is designed around one composition per instance.
+     * The UI observes this flow and re-attaches the surface.
      */
-    fun setTimeline(clips: List<ClipEntity>) {
-        timelineClips = clips
-        val wasPlaying = player.isPlaying
-        val items = clips.map { it.toMediaItem() }
-        // Effects must be in place before prepare() on some Media3 versions.
-        applyFilterForIndex(0)
-        player.setMediaItems(items)
-        player.prepare()
-        player.playWhenReady = wasPlaying
+    private val _player = MutableStateFlow<Player?>(null)
+    val playerFlow: StateFlow<Player?> = _player
+    val player: Player? get() = _player.value
+
+    private var currentLayers: CompositionFactory.Layers? = null
+    private var canvasWidth = 1080
+    private var canvasHeight = 1920
+
+    /** Preview renders at reduced resolution to stay cool on budget phones. */
+    private fun previewSize(): Pair<Int, Int> {
+        val shortSide = minOf(canvasWidth, canvasHeight)
+        val scale = if (shortSide > 720) 720f / shortSide else 1f
+        return Pair(
+            ((canvasWidth * scale).toInt() and -2),
+            ((canvasHeight * scale).toInt() and -2),
+        )
     }
 
-    /** Raw speed change for the whole preview (per-clip speed is applied at export). */
-    fun setSpeed(speed: Float) {
-        player.playbackParameters = PlaybackParameters(speed)
+    fun setCanvas(width: Int, height: Int) {
+        canvasWidth = width
+        canvasHeight = height
     }
 
-    /** Seeks to an absolute project-timeline position across clip boundaries. */
-    fun seekToTimeline(clips: List<ClipEntity>, timelineMs: Long) {
-        var index = 0
-        for ((i, clip) in clips.withIndex()) {
-            if (timelineMs < clip.timelineEndMs) {
-                index = i
-                break
+    /** Rebuilds the preview from the timeline, keeping the playhead position. */
+    fun setTimeline(layers: CompositionFactory.Layers) {
+        currentLayers = layers
+        rebuild(layers, includeOverlayTrack = true)
+    }
+
+    private fun rebuild(layers: CompositionFactory.Layers, includeOverlayTrack: Boolean) {
+        val previousPosition = _player.value?.currentPosition ?: 0L
+        releasePlayer()
+
+        if (layers.videoClips.isEmpty()) return
+
+        val (w, h) = previewSize()
+        val newPlayer = CompositionPlayer.Builder(context).build()
+        newPlayer.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                // A device-specific compositor failure must not brick the
+                // preview: retry once without the PIP layer.
+                if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
+                    rebuild(layers, includeOverlayTrack = false)
+                }
             }
-            index = i
-        }
-        val clip = clips.getOrNull(index) ?: return
-        val offsetInClip = (timelineMs - clip.timelineStartMs).coerceAtLeast(0)
-        player.seekTo(index, offsetInClip)
-    }
+        })
 
-    /** Maps the player's (item, position) back to absolute project-timeline ms. */
-    fun currentTimelinePositionMs(): Long {
-        val clip = timelineClips.getOrNull(player.currentMediaItemIndex) ?: return 0L
-        return clip.timelineStartMs + player.currentPosition.coerceAtLeast(0)
-    }
-
-    fun play() = player.play()
-    fun pause() = player.pause()
-
-    fun release() = player.release()
-
-    private fun applyFilterForIndex(index: Int) {
-        val clip = timelineClips.getOrNull(index)
-        // setVideoEffects is flagged unstable; never let a preview-effect
-        // failure take down playback itself.
         runCatching {
-            player.setVideoEffects(clip?.let { EffectResolver.videoEffectsFor(it) } ?: emptyList())
+            newPlayer.setComposition(
+                CompositionFactory.build(layers, w, h, includeOverlayTrack)
+            )
+            newPlayer.prepare()
+            newPlayer.seekTo(previousPosition)
+            _player.value = newPlayer
+        }.onFailure {
+            newPlayer.release()
+            if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
+                rebuild(layers, includeOverlayTrack = false)
+            }
         }
     }
 
-    private fun ClipEntity.toMediaItem(): MediaItem {
-        val builder = MediaItem.Builder().setUri(Uri.parse(sourceUri))
-        if (type == ClipType.IMAGE) {
-            // ExoPlayer's ImageRenderer shows stills for a fixed duration.
-            builder.setImageDurationMs(timelineDurationMs)
-        } else {
-            builder.setClippingConfiguration(
-                MediaItem.ClippingConfiguration.Builder()
-                    .setStartPositionMs(sourceStartMs)
-                    .setEndPositionMs(sourceEndMs)
-                    .build()
-            )
-        }
-        return builder.build()
+    /** Composition time == project-timeline time: seeks map 1:1. */
+    fun seekTo(timelineMs: Long) {
+        _player.value?.seekTo(timelineMs.coerceAtLeast(0))
     }
+
+    fun currentTimelinePositionMs(): Long = _player.value?.currentPosition ?: 0L
+
+    val isPlaying: Boolean get() = _player.value?.isPlaying == true
+
+    fun play() {
+        _player.value?.play()
+    }
+
+    fun pause() {
+        _player.value?.pause()
+    }
+
+    fun togglePlayback() {
+        val p = _player.value ?: return
+        if (p.isPlaying) p.pause() else p.play()
+    }
+
+    private fun releasePlayer() {
+        _player.value?.release()
+        _player.value = null
+    }
+
+    fun release() = releasePlayer()
 }

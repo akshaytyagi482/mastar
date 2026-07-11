@@ -36,16 +36,20 @@ object EffectResolver {
     /**
      * Per-clip video chain: transform (rotate/flip/scale) → manual color
      * adjustments → filter at intensity → opacity.
+     *
+     * [includeTransform] is false for PIP overlay clips, whose scale/rotation/
+     * opacity are applied by the video compositor instead (flip stays local).
      */
-    fun videoEffectsFor(clip: ClipEntity): List<Effect> = buildList {
+    fun videoEffectsFor(clip: ClipEntity, includeTransform: Boolean = true): List<Effect> = buildList {
         // Transform. Flip is a negative scale; Media3 normalizes output size.
-        val scaleX = clip.scale * (if (clip.flipH) -1f else 1f)
-        val scaleY = clip.scale * (if (clip.flipV) -1f else 1f)
-        if (scaleX != 1f || scaleY != 1f || clip.rotationDeg != 0f) {
+        val scaleX = (if (includeTransform) clip.scale else 1f) * (if (clip.flipH) -1f else 1f)
+        val scaleY = (if (includeTransform) clip.scale else 1f) * (if (clip.flipV) -1f else 1f)
+        val rotation = if (includeTransform) clip.rotationDeg else 0f
+        if (scaleX != 1f || scaleY != 1f || rotation != 0f) {
             add(
                 ScaleAndRotateTransformation.Builder()
                     .setScale(scaleX, scaleY)
-                    .setRotationDegrees(clip.rotationDeg)
+                    .setRotationDegrees(rotation)
                     .build()
             )
         }
@@ -76,7 +80,9 @@ object EffectResolver {
 
         addAll(FilterLibrary.effectsFor(clip.filterId, clip.filterIntensity))
 
-        if (clip.opacity < 1f) add(AlphaScale(clip.opacity.coerceIn(0f, 1f)))
+        if (includeTransform && clip.opacity < 1f) {
+            add(AlphaScale(clip.opacity.coerceIn(0f, 1f)))
+        }
     }
 
     /**

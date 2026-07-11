@@ -22,6 +22,8 @@ class TimedTextOverlay(
     payload: String,
     private val startMs: Long,
     private val endMs: Long,
+    /** Output-frame pixels per sp, so text keeps its proportion at any res. */
+    pxPerSp: Float = 3f,
 ) : TextOverlay() {
 
     private val visibleText: SpannableString = run {
@@ -29,9 +31,7 @@ class TimedTextOverlay(
         SpannableString(style.text).apply {
             fun span(what: Any) = setSpan(what, 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             span(ForegroundColorSpan(style.color.toInt()))
-            // Rough sp -> export-canvas px mapping; text is rendered onto the
-            // output frame, which is much larger than a phone's dp space.
-            span(AbsoluteSizeSpan(style.sizeSp * 3))
+            span(AbsoluteSizeSpan((style.sizeSp * pxPerSp).toInt().coerceAtLeast(8)))
             if (style.bold) span(StyleSpan(Typeface.BOLD))
             if (style.background) span(BackgroundColorSpan(Color.argb(160, 0, 0, 0)))
             if (style.font != "sans") span(TypefaceSpan(androidFontFamily(style.font)))

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Mastar launcher: gradient M over a filmstrip-dark base, scissors, timeline. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Left stroke of the M: orange -> pink -->
+    <path
+        android:pathData="M36,62 L36,34 L54,56"
+        android:strokeWidth="11"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startColor="#FFA726"
+                android:endColor="#F5316F"
+                android:startX="36"
+                android:startY="34"
+                android:endX="46"
+                android:endY="62"
+                android:type="linear" />
+        </aapt:attr>
+    </path>
+
+    <!-- Right stroke of the M: cyan -> purple -->
+    <path
+        android:pathData="M54,56 L72,34 L72,62"
+        android:strokeWidth="11"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startColor="#29B6F6"
+                android:endColor="#7C4DFF"
+                android:startX="62"
+                android:startY="34"
+                android:endX="72"
+                android:endY="62"
+                android:type="linear" />
+        </aapt:attr>
+    </path>
+
+    <!-- Scissors: crossed blades + finger rings -->
+    <path
+        android:pathData="M49,75 L58,64 M59,75 L50,64"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M49,77.5 m-3,0 a3,3 0 1,1 6,0 a3,3 0 1,1 -6,0"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.2" />
+    <path
+        android:pathData="M59,77.5 m-3,0 a3,3 0 1,1 6,0 a3,3 0 1,1 -6,0"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2.2" />
+
+    <!-- Timeline: three clips + playhead pin -->
+    <path
+        android:pathData="M37,85 h9 a1.5,1.5 0 0 1 1.5,1.5 v2 a1.5,1.5 0 0 1 -1.5,1.5 h-9 a1.5,1.5 0 0 1 -1.5,-1.5 v-2 a1.5,1.5 0 0 1 1.5,-1.5 z"
+        android:fillColor="#7C4DFF" />
+    <path
+        android:pathData="M50,85 h9 a1.5,1.5 0 0 1 1.5,1.5 v2 a1.5,1.5 0 0 1 -1.5,1.5 h-9 a1.5,1.5 0 0 1 -1.5,-1.5 v-2 a1.5,1.5 0 0 1 1.5,-1.5 z"
+        android:fillColor="#2979FF" />
+    <path
+        android:pathData="M63,85 h8 a1.5,1.5 0 0 1 1.5,1.5 v2 a1.5,1.5 0 0 1 -1.5,1.5 h-8 a1.5,1.5 0 0 1 -1.5,-1.5 v-2 a1.5,1.5 0 0 1 1.5,-1.5 z"
+        android:fillColor="#26C6A2" />
+    <path
+        android:pathData="M54,82.5 L54,92.5"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round" />
+</vector>

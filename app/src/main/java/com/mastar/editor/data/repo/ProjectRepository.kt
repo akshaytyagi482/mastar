@@ -140,6 +140,26 @@ class ProjectRepository(private val db: MastarDatabase) {
         )
     }
 
+    /** PIP layer clip: starts centered at half size so it reads as a layer. */
+    suspend fun addPipClip(
+        trackId: Long,
+        type: ClipType,
+        sourceUri: String,
+        sourceDurationMs: Long,
+        timelineStartMs: Long,
+    ): Long = db.clipDao().insertClip(
+        ClipEntity(
+            trackId = trackId,
+            type = type,
+            sourceUri = sourceUri,
+            sourceStartMs = 0,
+            sourceEndMs = sourceDurationMs,
+            sourceDurationMs = sourceDurationMs,
+            timelineStartMs = timelineStartMs,
+            scale = 0.5f,
+        )
+    )
+
     /** Overlay clips (TEXT/STICKER) have no source media; duration is explicit. */
     suspend fun addOverlayClip(
         trackId: Long,

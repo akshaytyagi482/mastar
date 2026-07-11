@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPicture
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Rotate90DegreesCw
@@ -96,6 +97,7 @@ enum class EditorTool(
 ) {
     ADD_CLIP(Icons.Default.Add, "Video", false),
     PHOTO(Icons.Default.Image, "Photo", false),
+    PIP(Icons.Default.PictureInPicture, "Overlay", false),
     AUDIO(Icons.Default.MusicNote, "Audio", false),
     EXTRACT(Icons.Default.GraphicEq, "Extract", false),
     TEXT(Icons.Default.TextFields, "Text", false),
@@ -114,7 +116,7 @@ enum class EditorTool(
 }
 
 private val ROOT_TOOLS = listOf(
-    EditorTool.ADD_CLIP, EditorTool.PHOTO, EditorTool.AUDIO,
+    EditorTool.ADD_CLIP, EditorTool.PHOTO, EditorTool.PIP, EditorTool.AUDIO,
     EditorTool.EXTRACT, EditorTool.TEXT, EditorTool.STICKER,
 )
 private val CLIP_TOOLS = listOf(
@@ -516,6 +518,25 @@ fun ToolPanel(
                     onValue = { opacity = it },
                     onCommit = { viewModel.updateClip(clip.id) { it.copy(opacity = opacity) } },
                 )
+                // PIP layers can also be positioned on the canvas.
+                if (viewModel.isOverlayClip(clip.id)) {
+                    var posX by remember(clip.id) { mutableFloatStateOf(clip.positionX) }
+                    PanelSlider(
+                        label = "Position X",
+                        value = posX,
+                        range = 0f..1f,
+                        onValue = { posX = it },
+                        onCommit = { viewModel.updateClip(clip.id) { it.copy(positionX = posX) } },
+                    )
+                    var posY by remember(clip.id) { mutableFloatStateOf(clip.positionY) }
+                    PanelSlider(
+                        label = "Position Y",
+                        value = posY,
+                        range = 0f..1f,
+                        onValue = { posY = it },
+                        onCommit = { viewModel.updateClip(clip.id) { it.copy(positionY = posY) } },
+                    )
+                }
             }
             EditorTool.TRANSITION -> ChipRow(
                 options = TRANSITIONS,
@@ -675,46 +696,24 @@ fun ExportDialog(
     )
 }
 
-/** Text + Lottie sticker overlays for whatever sits under the playhead. */
+/**
+ * Lottie sticker overlays at the playhead. Text is no longer rendered here —
+ * it's burned into the preview composition itself (true WYSIWYG).
+ */
 @UnstableApi
 @Composable
 fun PreviewOverlays(viewModel: EditorViewModel, playheadMs: Long) {
-    val overlays = viewModel.overlaysAt(playheadMs)
+    val stickers = viewModel.stickersAt(playheadMs)
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        overlays.forEach { clip ->
-            when (clip.type) {
-                ClipType.TEXT -> {
-                    val style = TextPayload.fromPayload(clip.payload)
-                    Text(
-                        text = style.text,
-                        color = Color(style.color),
-                        fontSize = style.sizeSp.sp,
-                        fontWeight = if (style.bold) FontWeight.Bold else FontWeight.Normal,
-                        fontFamily = composeFont(style.font),
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .padding(24.dp)
-                            .then(
-                                if (style.background) Modifier.background(
-                                    Color.Black.copy(alpha = 0.55f),
-                                    RoundedCornerShape(6.dp),
-                                ).padding(horizontal = 10.dp, vertical = 4.dp)
-                                else Modifier
-                            ),
-                    )
-                }
-                ClipType.STICKER -> {
-                    val composition by rememberLottieComposition(
-                        LottieCompositionSpec.Asset("stickers/${clip.payload}")
-                    )
-                    LottieAnimation(
-                        composition = composition,
-                        iterations = LottieConstants.IterateForever,
-                        modifier = Modifier.size(120.dp),
-                    )
-                }
-                else -> Unit
-            }
+        stickers.forEach { clip ->
+            val composition by rememberLottieComposition(
+                LottieCompositionSpec.Asset("stickers/${clip.payload}")
+            )
+            LottieAnimation(
+                composition = composition,
+                iterations = LottieConstants.IterateForever,
+                modifier = Modifier.size(120.dp),
+            )
         }
     }
 }

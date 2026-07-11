@@ -12,8 +12,10 @@ import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.data.db.ProjectWithTracks
 import com.mastar.editor.data.db.TrackType
+import com.mastar.editor.engine.CompositionFactory
 import com.mastar.editor.engine.export.ExportEngine
 import com.mastar.editor.engine.playback.PreviewEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,7 +36,7 @@ class EditorViewModel(
 
     val project: StateFlow<ProjectWithTracks?> =
         repository.observeProject(projectId)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _selectedClipId = MutableStateFlow<Long?>(null)
     val selectedClipId: StateFlow<Long?> = _selectedClipId
@@ -51,12 +53,50 @@ class EditorViewModel(
     val canUndo: StateFlow<Boolean> = _canUndo
     val canRedo: StateFlow<Boolean> = _canRedo
 
+    private var lastLayers: CompositionFactory.Layers? = null
+    private var lastCanvas: Pair<Int, Int>? = null
+
+    init {
+        // The DB is the single source of truth: any clip change (from any
+        // code path) lands here and rebuilds the preview composition once.
+        viewModelScope.launch {
+            project.collect { p ->
+                p ?: return@collect
+                val canvas = p.project.canvasWidth to p.project.canvasHeight
+                val layers = layersFrom(p)
+                if (layers != lastLayers || canvas != lastCanvas) {
+                    lastLayers = layers
+                    lastCanvas = canvas
+                    previewEngine.setCanvas(canvas.first, canvas.second)
+                    previewEngine.setTimeline(layers)
+                }
+            }
+        }
+    }
+
+    private fun layersFrom(p: ProjectWithTracks): CompositionFactory.Layers {
+        fun clipsOf(type: TrackType) = p.tracks
+            .filter { it.track.type == type }
+            .flatMap { it.clips }
+            .sortedBy { it.timelineStartMs }
+        return CompositionFactory.Layers(
+            videoClips = clipsOf(TrackType.VIDEO),
+            overlayClips = clipsOf(TrackType.OVERLAY),
+            audioClips = clipsOf(TrackType.AUDIO),
+            textClips = clipsOf(TrackType.TEXT),
+        )
+    }
+
     val projectDurationMs: Long
-        get() = allClips().filter { it.type == ClipType.VIDEO }
-            .maxOfOrNull { it.timelineEndMs } ?: 0L
+        get() = allClips().maxOfOrNull { it.timelineEndMs } ?: 0L
 
     fun selectedClip(): ClipEntity? =
         _selectedClipId.value?.let { id -> allClips().firstOrNull { it.id == id } }
+
+    fun isOverlayClip(clipId: Long): Boolean =
+        project.value?.tracks
+            ?.firstOrNull { it.track.type == TrackType.OVERLAY }
+            ?.clips?.any { it.id == clipId } == true
 
     fun selectClip(clipId: Long?) {
         _selectedClipId.value = clipId
@@ -91,7 +131,6 @@ class EditorViewModel(
             repository.replaceAllClips(projectId, snapshot)
             if (snapshot.none { it.id == _selectedClipId.value }) _selectedClipId.value = null
             refreshUndoState()
-            refreshPreview()
         }
     }
 
@@ -109,7 +148,21 @@ class EditorViewModel(
                 sourceDurationMs = sourceDurationMs,
                 timelineStartMs = appendAtMs,
             )
-            refreshPreview()
+        }
+    }
+
+    /** PIP layer: video or photo floating over the main track. */
+    fun addPipClip(sourceUri: String, isImage: Boolean, sourceDurationMs: Long, atMs: Long) {
+        viewModelScope.launch {
+            snapshotForUndo()
+            val trackId = repository.ensureTrack(projectId, TrackType.OVERLAY)
+            repository.addPipClip(
+                trackId = trackId,
+                type = if (isImage) ClipType.IMAGE else ClipType.VIDEO,
+                sourceUri = sourceUri,
+                sourceDurationMs = sourceDurationMs,
+                timelineStartMs = atMs,
+            )
         }
     }
 
@@ -142,7 +195,6 @@ class EditorViewModel(
                 sourceDurationMs = durationMs,
                 timelineStartMs = startMs,
             )
-            refreshPreview()
         }
     }
 
@@ -155,73 +207,17 @@ class EditorViewModel(
             val clip = selectedClip() ?: return@launch
             snapshotForUndo()
             repository.duplicateClip(clip)
-            refreshPreview()
         }
     }
 
-    /**
-     * Trim by edge drag: updates the source window and timeline position
-     * together (left-handle trims move both).
-     */
-    fun trimClip(clipId: Long, newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) {
-        updateClip(clipId) {
-            it.copy(
-                sourceStartMs = newSourceStartMs,
-                sourceEndMs = newSourceEndMs,
-                timelineStartMs = newTimelineStartMs,
-            )
-        }
-    }
-
-    /**
-     * Freeze frame: grabs the frame under the playhead as a PNG, splits the
-     * clip there, ripples everything right by [FREEZE_DURATION_MS], and drops
-     * the still in the gap.
-     */
-    fun freezeFrame(playheadMs: Long, outputDir: File) {
-        val clip = selectedClip() ?: return
-        if (clip.type != ClipType.VIDEO) return
-        if (playheadMs !in clip.timelineStartMs until clip.timelineEndMs) return
-
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            val sourceMs = clip.sourceStartMs +
-                ((playheadMs - clip.timelineStartMs) * clip.speed).toLong()
-            val retriever = android.media.MediaMetadataRetriever()
-            val bitmap = try {
-                retriever.setDataSource(
-                    getApplication<Application>(),
-                    android.net.Uri.parse(clip.sourceUri),
-                )
-                retriever.getFrameAtTime(sourceMs * 1000)
-            } catch (e: Exception) {
-                null
-            } finally {
-                retriever.release()
-            } ?: return@launch
-
-            val file = File(outputDir, "freeze_${clip.id}_$sourceMs.png")
-            file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, it) }
-
-            snapshotForUndo()
-            repository.insertFreezeFrame(
-                projectId = projectId,
-                clip = clip,
-                playheadMs = playheadMs,
-                imageUri = android.net.Uri.fromFile(file).toString(),
-                durationMs = FREEZE_DURATION_MS,
-            )
-            refreshPreview()
-        }
-    }
-
-    fun addTextClip(text: String, atMs: Long) {
+    fun addTextClip(payloadJson: String, atMs: Long) {
         viewModelScope.launch {
             snapshotForUndo()
             val trackId = repository.ensureTrack(projectId, TrackType.TEXT)
             repository.addOverlayClip(
                 trackId = trackId,
                 type = ClipType.TEXT,
-                payload = text,
+                payload = payloadJson,
                 timelineStartMs = atMs,
                 durationMs = DEFAULT_OVERLAY_DURATION_MS,
             )
@@ -242,13 +238,12 @@ class EditorViewModel(
         }
     }
 
-    /** Persists an edit (speed/volume/filter/transition/move) on a clip. */
+    /** Persists an edit (speed/volume/filter/transform/move) on a clip. */
     fun updateClip(clipId: Long, transform: (ClipEntity) -> ClipEntity) {
         viewModelScope.launch {
             val clip = allClips().firstOrNull { it.id == clipId } ?: return@launch
             snapshotForUndo()
             repository.updateClip(transform(clip))
-            refreshPreview()
         }
     }
 
@@ -256,12 +251,21 @@ class EditorViewModel(
         updateClip(clipId) { it.copy(timelineStartMs = newTimelineStartMs) }
     }
 
+    fun trimClip(clipId: Long, newSourceStartMs: Long, newSourceEndMs: Long, newTimelineStartMs: Long) {
+        updateClip(clipId) {
+            it.copy(
+                sourceStartMs = newSourceStartMs,
+                sourceEndMs = newSourceEndMs,
+                timelineStartMs = newTimelineStartMs,
+            )
+        }
+    }
+
     fun splitSelectedClipAtPlayhead(playheadMs: Long) {
         viewModelScope.launch {
             val clip = selectedClip() ?: return@launch
             snapshotForUndo()
             repository.splitClipAt(clip, playheadMs)
-            refreshPreview()
         }
     }
 
@@ -271,11 +275,47 @@ class EditorViewModel(
             snapshotForUndo()
             repository.deleteClip(clipId)
             _selectedClipId.value = null
-            refreshPreview()
         }
     }
 
-    /** Canvas resolution (720P / 1080P) — applied at export. */
+    fun freezeFrame(playheadMs: Long, outputDir: File) {
+        val clip = selectedClip() ?: return
+        if (clip.type != ClipType.VIDEO) return
+        if (playheadMs !in clip.timelineStartMs until clip.timelineEndMs) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val sourceMs = clip.sourceStartMs +
+                ((playheadMs - clip.timelineStartMs) * clip.speed).toLong()
+            val retriever = android.media.MediaMetadataRetriever()
+            val bitmap = try {
+                retriever.setDataSource(
+                    getApplication<Application>(),
+                    android.net.Uri.parse(clip.sourceUri),
+                )
+                retriever.getFrameAtTime(sourceMs * 1000)
+            } catch (e: Exception) {
+                null
+            } finally {
+                retriever.release()
+            } ?: return@launch
+
+            val file = File(outputDir, "freeze_${clip.id}_$sourceMs.png")
+            file.outputStream().use {
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, it)
+            }
+
+            snapshotForUndo()
+            repository.insertFreezeFrame(
+                projectId = projectId,
+                clip = clip,
+                playheadMs = playheadMs,
+                imageUri = android.net.Uri.fromFile(file).toString(),
+                durationMs = FREEZE_DURATION_MS,
+            )
+        }
+    }
+
+    /** Canvas aspect (9:16, 16:9, ...) — preview + export both follow. */
     fun setCanvas(width: Int, height: Int) {
         viewModelScope.launch {
             val p = project.value?.project ?: return@launch
@@ -283,23 +323,19 @@ class EditorViewModel(
         }
     }
 
-    fun seekTo(timelineMs: Long) {
-        previewEngine.seekToTimeline(mainTrackClips(), timelineMs)
-    }
+    fun seekTo(timelineMs: Long) = previewEngine.seekTo(timelineMs)
 
-    fun togglePlayback() {
-        if (previewEngine.player.isPlaying) previewEngine.pause() else previewEngine.play()
-    }
+    fun togglePlayback() = previewEngine.togglePlayback()
 
     fun export(outputDir: File, settings: ExportEngine.Settings) {
         val snapshot = project.value ?: return
-        val clips = mainTrackClips()
-        if (clips.isEmpty()) return
+        val layers = layersFrom(snapshot)
+        if (layers.videoClips.isEmpty()) return
+        // Free the decoders for the transformer on budget devices.
+        previewEngine.pause()
         val outputFile = File(outputDir, "mastar_${snapshot.project.id}_export.mp4")
         exportEngine.export(
-            clips = clips,
-            textClips = clipsOfType(ClipType.TEXT),
-            audioClips = clipsOfType(ClipType.AUDIO),
+            layers = layers,
             outputFile = outputFile,
             canvasWidth = snapshot.project.canvasWidth,
             canvasHeight = snapshot.project.canvasHeight,
@@ -319,28 +355,15 @@ class EditorViewModel(
         }
     }
 
-    fun refreshPreview() {
-        previewEngine.setTimeline(mainTrackClips())
-    }
-
-    /** Overlay clips (text/stickers) visible at [timelineMs] for the preview. */
-    fun overlaysAt(timelineMs: Long): List<ClipEntity> =
+    /** Lottie stickers still render as Compose overlays (not in the GL graph yet). */
+    fun stickersAt(timelineMs: Long): List<ClipEntity> =
         allClips().filter {
-            (it.type == ClipType.TEXT || it.type == ClipType.STICKER) &&
+            it.type == ClipType.STICKER &&
                 timelineMs in it.timelineStartMs until it.timelineEndMs
         }
 
     private fun allClips(): List<ClipEntity> =
         project.value?.tracks?.flatMap { it.clips }.orEmpty()
-
-    private fun clipsOfType(type: ClipType): List<ClipEntity> =
-        allClips().filter { it.type == type }
-
-    private fun mainTrackClips() = project.value?.tracks
-        ?.firstOrNull { it.track.type == TrackType.VIDEO }
-        ?.clips
-        ?.sortedBy { it.timelineStartMs }
-        .orEmpty()
 
     override fun onCleared() {
         previewEngine.release()

@@ -55,16 +55,17 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.3.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.3.0.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.4.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.4.0.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
 3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
 
-> v0.3.0 is a debug-signed build for testing. CapCut-style editor: filmstrip
-> timeline with trim handles, filters with intensity, manual color adjust,
-> transform/flip/opacity, voice effects, audio fades, text styling, stickers,
-> freeze frame, undo/redo, aspect ratios, and export settings — all offline.
+> v0.4.0: the preview now plays the exact composition that exports
+> (CompositionPlayer) — filters, volume, fades, voice effects, and text all
+> render live, and the black-screen-after-filter bug is gone. New: PIP
+> multi-layer overlays (video/photo over the main track with position, scale,
+> opacity) and the Mastar launcher icon.
 > See [docs/FEATURES.md](docs/FEATURES.md) for the full parity matrix.
 
 ## Building

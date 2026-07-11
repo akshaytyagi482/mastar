@@ -57,6 +57,7 @@ fun EditorScreen(
     val exportState by viewModel.exportState.collectAsState()
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
+    val previewPlayer by viewModel.previewEngine.playerFlow.collectAsState()
     val timelineState = rememberTimelineState()
 
     var activeTool by remember { mutableStateOf<EditorTool?>(null) }
@@ -65,9 +66,9 @@ fun EditorScreen(
     var positionMs by remember { mutableLongStateOf(0L) }
 
     // Follow playback: playhead + auto-scroll + transport clock at 30Hz.
-    LaunchedEffect(project) {
+    LaunchedEffect(Unit) {
         while (true) {
-            isPlaying = viewModel.previewEngine.player.isPlaying
+            isPlaying = viewModel.previewEngine.isPlaying
             if (isPlaying) {
                 positionMs = viewModel.previewEngine.currentTimelinePositionMs()
                 timelineState.playheadMs = positionMs
@@ -127,6 +128,20 @@ fun EditorScreen(
         }
     }
 
+    // PIP layer: video or photo floating over the main track.
+    val pickPip = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        takePersist(uri)
+        val mime = context.contentResolver.getType(uri).orEmpty()
+        val isImage = mime.startsWith("image/")
+        val durationMs = if (isImage) 3000L else probeDurationMs(context, uri)
+        if (durationMs > 0) {
+            viewModel.addPipClip(uri.toString(), isImage, durationMs, timelineState.playheadMs)
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         EditorTopBar(
             canvasWidth = project?.project?.canvasWidth ?: 1080,
@@ -147,9 +162,13 @@ fun EditorScreen(
             AndroidView(
                 factory = { ctx ->
                     PlayerView(ctx).apply {
-                        player = viewModel.previewEngine.player
                         useController = false
                     }
+                },
+                update = { view ->
+                    // The engine rebuilds the player per composition; keep
+                    // the surface attached to the latest instance.
+                    if (view.player !== previewPlayer) view.player = previewPlayer
                 },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -204,6 +223,7 @@ fun EditorScreen(
                 when (tool) {
                     EditorTool.ADD_CLIP -> pickVideos.launch(arrayOf("video/*"))
                     EditorTool.PHOTO -> pickPhoto.launch(arrayOf("image/*"))
+                    EditorTool.PIP -> pickPip.launch(arrayOf("video/*", "image/*"))
                     EditorTool.AUDIO -> pickAudio.launch(arrayOf("audio/*"))
                     EditorTool.EXTRACT -> pickExtract.launch(arrayOf("video/*"))
                     EditorTool.SPLIT -> viewModel.splitSelectedClipAtPlayhead(timelineState.playheadMs)
