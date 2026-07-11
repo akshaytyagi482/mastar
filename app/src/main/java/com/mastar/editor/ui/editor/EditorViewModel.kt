@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -86,13 +87,16 @@ class EditorViewModel(
 
     init {
         // The DB is the single source of truth: any clip OR keyframe change
-        // lands here and rebuilds the preview composition once.
+        // lands here and rebuilds the preview composition once. collectLatest
+        // + delay debounces edit bursts (drag commits, auto-key sweeps) so
+        // the player isn't rebuilt more than ~6x/second.
         viewModelScope.launch {
-            combine(project, keyframes) { p, kfs -> p to kfs }.collect { (p, kfs) ->
-                p ?: return@collect
+            combine(project, keyframes) { p, kfs -> p to kfs }.collectLatest { (p, kfs) ->
+                p ?: return@collectLatest
                 val canvas = p.project.canvasWidth to p.project.canvasHeight
                 val layers = layersFrom(p, kfs)
                 if (layers != lastLayers || canvas != lastCanvas) {
+                    kotlinx.coroutines.delay(160)
                     lastLayers = layers
                     lastCanvas = canvas
                     previewEngine.setCanvas(canvas.first, canvas.second)
@@ -111,9 +115,16 @@ class EditorViewModel(
             .flatMap { it.clips }
             .filter { !it.hidden }
             .sortedBy { it.timelineStartMs }
+        val overlayLanes = p.tracks
+            .filter { it.track.type == TrackType.OVERLAY }
+            .sortedBy { it.track.zOrder }
+            .map { lane ->
+                lane.clips.filter { !it.hidden }.sortedBy { it.timelineStartMs }
+            }
+            .filter { it.isNotEmpty() }
         return CompositionFactory.Layers(
             videoClips = clipsOf(TrackType.VIDEO),
-            overlayClips = clipsOf(TrackType.OVERLAY),
+            overlayLanes = overlayLanes,
             audioClips = clipsOf(TrackType.AUDIO),
             textClips = clipsOf(TrackType.TEXT),
             filterClips = clipsOf(TrackType.FILTER),
@@ -131,8 +142,8 @@ class EditorViewModel(
 
     fun isOverlayClip(clipId: Long): Boolean =
         project.value?.tracks
-            ?.firstOrNull { it.track.type == TrackType.OVERLAY }
-            ?.clips?.any { it.id == clipId } == true
+            ?.filter { it.track.type == TrackType.OVERLAY }
+            ?.any { lane -> lane.clips.any { it.id == clipId } } == true
 
     fun selectClip(clipId: Long?) {
         _selectedClipId.value = clipId
@@ -178,7 +189,12 @@ class EditorViewModel(
         }
     }
 
-    fun addVideoClip(sourceUri: String, sourceDurationMs: Long) {
+    fun addVideoClip(
+        sourceUri: String,
+        sourceDurationMs: Long,
+        sourceWidth: Int = 0,
+        sourceHeight: Int = 0,
+    ) {
         viewModelScope.launch {
             val snapshot = project.value ?: return@launch
             val videoTrack =
@@ -191,21 +207,37 @@ class EditorViewModel(
                 sourceUri = sourceUri,
                 sourceDurationMs = sourceDurationMs,
                 timelineStartMs = appendAtMs,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
             )
         }
     }
 
-    /** PIP layer: video or photo floating over the main track. */
-    fun addPipClip(sourceUri: String, isImage: Boolean, sourceDurationMs: Long, atMs: Long) {
+    /**
+     * PIP layer: video or photo floating over the main track. Lanes stack
+     * automatically — overlapping additions get a fresh lane (video over
+     * video over video, no manual track management).
+     */
+    fun addPipClip(
+        sourceUri: String,
+        isImage: Boolean,
+        sourceDurationMs: Long,
+        atMs: Long,
+        sourceWidth: Int = 0,
+        sourceHeight: Int = 0,
+    ) {
         viewModelScope.launch {
             snapshotForUndo()
-            val trackId = repository.ensureTrack(projectId, TrackType.OVERLAY)
+            val durationOnTimeline = sourceDurationMs
+            val trackId = repository.findOrCreatePipLane(projectId, atMs, durationOnTimeline)
             repository.addPipClip(
                 trackId = trackId,
                 type = if (isImage) ClipType.IMAGE else ClipType.VIDEO,
                 sourceUri = sourceUri,
                 sourceDurationMs = sourceDurationMs,
                 timelineStartMs = atMs,
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
             )
         }
     }

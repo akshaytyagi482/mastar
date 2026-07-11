@@ -157,17 +157,20 @@ fun TimelineView(
                     }
                 }
 
-            // PIP overlay layer (video/photo over the main track).
-            tracks.firstOrNull { it.track.type == TrackType.OVERLAY }?.let { pipTrack ->
-                if (pipTrack.clips.isNotEmpty()) {
-                    TrackLane(
-                        state, pipTrack.clips.sortedBy { it.timelineStartMs }, allClips,
-                        viewportWidthPx, PIP_TRACK_HEIGHT, selectedClipId, multiSelection,
-                        keyframeTimes, actions,
-                    )
-                    Spacer(Modifier.height(3.dp))
+            // PIP overlay lanes (video/photo over the main track) — as many
+            // lanes as the edit needs, topmost first like CapCut.
+            tracks.filter { it.track.type == TrackType.OVERLAY }
+                .sortedByDescending { it.track.zOrder }
+                .forEach { pipTrack ->
+                    if (pipTrack.clips.isNotEmpty()) {
+                        TrackLane(
+                            state, pipTrack.clips.sortedBy { it.timelineStartMs }, allClips,
+                            viewportWidthPx, PIP_TRACK_HEIGHT, selectedClipId, multiSelection,
+                            keyframeTimes, actions,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                    }
                 }
-            }
 
             // Main video track with filmstrip thumbnails.
             tracks.firstOrNull { it.track.type == TrackType.VIDEO }?.let { videoTrack ->
@@ -369,9 +372,15 @@ private fun ClipView(
 
     fun clampedRight(): Long {
         val minLeft = -(clip.timelineDurationMs - minDurationMs)
-        val sourceHeadroom =
-            if (clip.sourceDurationMs > 0) clip.sourceDurationMs - clip.sourceEndMs
-            else Long.MAX_VALUE / 2
+        // Real media is bounded by the source file; synthetic media (photos,
+        // text, stickers, filters) stretches as far as you like — the 3s cap
+        // on image overlays was this clamp using their default duration.
+        val sourceHeadroom = when (clip.type) {
+            ClipType.VIDEO, ClipType.AUDIO ->
+                if (clip.sourceDurationMs > 0) clip.sourceDurationMs - clip.sourceEndMs
+                else Long.MAX_VALUE / 2
+            else -> Long.MAX_VALUE / 2
+        }
         val maxRight = sourceHeadroom / clip.speed
         return trimRightMs.coerceIn(minLeft, maxRight.toFloat()).toLong()
     }
@@ -649,7 +658,7 @@ private fun Filmstrip(
 private fun AudioWaveform(clip: ClipEntity) {
     val context = LocalContext.current
     val peaks by produceState<FloatArray?>(initialValue = null, clip.sourceUri) {
-        value = Waveform.peaks(context, clip.sourceUri)
+        value = Waveform.peaks(context, clip.sourceUri, clip.sourceDurationMs)
     }
     Box(Modifier.fillMaxSize()) {
         val data = peaks

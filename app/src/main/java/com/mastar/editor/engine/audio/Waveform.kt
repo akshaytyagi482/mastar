@@ -31,7 +31,11 @@ object Waveform {
     private val memoryCache = LruCache<String, FloatArray>(24)
     private val inFlight = Mutex()
 
-    suspend fun peaks(context: Context, sourceUri: String): FloatArray? =
+    suspend fun peaks(
+        context: Context,
+        sourceUri: String,
+        durationHintMs: Long = 0,
+    ): FloatArray? =
         withContext(Dispatchers.IO) {
             memoryCache.get(sourceUri)?.let { return@withContext it }
             // One decode at a time: budget phones stall with parallel codecs.
@@ -43,7 +47,8 @@ object Waveform {
                     memoryCache.put(sourceUri, fromDisk)
                     return@withLock fromDisk
                 }
-                val decoded = runCatching { decodePeaks(context, sourceUri) }.getOrNull()
+                val decoded =
+                    runCatching { decodePeaks(context, sourceUri, durationHintMs) }.getOrNull()
                 if (decoded != null) {
                     memoryCache.put(sourceUri, decoded)
                     runCatching { writeCache(cacheFile, decoded) }
@@ -76,7 +81,11 @@ object Waveform {
         }
     }
 
-    private fun decodePeaks(context: Context, sourceUri: String): FloatArray? {
+    private fun decodePeaks(
+        context: Context,
+        sourceUri: String,
+        durationHintMs: Long,
+    ): FloatArray? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -94,14 +103,21 @@ object Waveform {
             if (trackIndex < 0 || format == null) return null
             extractor.selectTrack(trackIndex)
 
-            val durationMs = (format.getLong(MediaFormat.KEY_DURATION) / 1000)
-                .coerceAtMost(MAX_DECODE_MS)
+            // Some containers omit KEY_DURATION; fall back to the clip's
+            // probed duration instead of failing (the invisible-waveform bug).
+            val durationMs = (
+                if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                    format.getLong(MediaFormat.KEY_DURATION) / 1000
+                } else durationHintMs.takeIf { it > 0 } ?: return null
+                ).coerceAtMost(MAX_DECODE_MS)
             val bucketCount = (durationMs / BUCKET_MS).toInt().coerceAtLeast(1)
             val peaks = FloatArray(bucketCount)
 
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
             val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-                .findDecoderForFormat(format) ?: return null
-            codec = MediaCodec.createByCodecName(codecName)
+                .findDecoderForFormat(format)
+            codec = if (codecName != null) MediaCodec.createByCodecName(codecName)
+            else MediaCodec.createDecoderByType(mime)
             codec.configure(format, null, null, 0)
             codec.start()
 

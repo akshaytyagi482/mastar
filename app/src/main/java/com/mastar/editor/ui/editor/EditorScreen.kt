@@ -122,8 +122,12 @@ fun EditorScreen(
     ) { uris ->
         uris.forEach { uri ->
             takePersist(uri)
-            val durationMs = probeDurationMs(context, uri)
-            if (durationMs > 0) viewModel.addVideoClip(uri.toString(), durationMs)
+            val probe = probeMedia(context, uri)
+            if (probe.durationMs > 0) {
+                viewModel.addVideoClip(
+                    uri.toString(), probe.durationMs, probe.width, probe.height
+                )
+            }
         }
     }
 
@@ -166,9 +170,17 @@ fun EditorScreen(
         takePersist(uri)
         val mime = context.contentResolver.getType(uri).orEmpty()
         val isImage = mime.startsWith("image/")
-        val durationMs = if (isImage) 3000L else probeDurationMs(context, uri)
-        if (durationMs > 0) {
-            viewModel.addPipClip(uri.toString(), isImage, durationMs, timelineState.playheadMs)
+        if (isImage) {
+            val (w, h) = probeImageSize(context, uri)
+            viewModel.addPipClip(uri.toString(), true, 3000L, timelineState.playheadMs, w, h)
+        } else {
+            val probe = probeMedia(context, uri)
+            if (probe.durationMs > 0) {
+                viewModel.addPipClip(
+                    uri.toString(), false, probe.durationMs, timelineState.playheadMs,
+                    probe.width, probe.height,
+                )
+            }
         }
     }
 
@@ -211,16 +223,24 @@ fun EditorScreen(
             val selectedForGesture = selectedId?.let { viewModel.clipById(it) }
             if (selectedForGesture != null &&
                 (selectedForGesture.type == ClipType.VIDEO ||
-                    selectedForGesture.type == ClipType.IMAGE)
+                    selectedForGesture.type == ClipType.IMAGE ||
+                    selectedForGesture.type == ClipType.TEXT)
             ) {
                 val values = viewModel.transformValuesAt(
                     selectedForGesture.id, timelineState.playheadMs
                 )
                 if (values != null) {
+                    val mediaAspect = when {
+                        selectedForGesture.type == ClipType.TEXT -> 3f
+                        selectedForGesture.sourceWidth > 0 && selectedForGesture.sourceHeight > 0 ->
+                            selectedForGesture.sourceWidth.toFloat() / selectedForGesture.sourceHeight
+                        else -> 1f
+                    }
                     TransformGestureBox(
                         positionX = values.positionX,
                         positionY = values.positionY,
                         scale = values.scale,
+                        mediaAspect = mediaAspect,
                         onCommit = { x, y, sc ->
                             viewModel.setClipTransform(
                                 selectedForGesture.id, timelineState.playheadMs,
@@ -419,6 +439,7 @@ private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.Transform
     positionX: Float,
     positionY: Float,
     scale: Float,
+    mediaAspect: Float,
     onCommit: (x: Float, y: Float, scale: Float) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -428,7 +449,10 @@ private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.Transform
     var zoomFactor by remember(positionX, positionY, scale) { mutableStateOf(1f) }
 
     val liveScale = (scale * zoomFactor).coerceIn(0.1f, 3f)
-    val boxSizePx = (minOf(widthPx, heightPx) * liveScale).coerceAtLeast(56f)
+    // Box matches the MEDIA's aspect ratio (scale=1 spans the short side).
+    val longSidePx = (minOf(widthPx, heightPx) * liveScale).coerceAtLeast(56f)
+    val boxW = if (mediaAspect >= 1f) longSidePx else longSidePx * mediaAspect
+    val boxH = if (mediaAspect >= 1f) longSidePx / mediaAspect else longSidePx
     val centerX = positionX * widthPx + dragOffset.x
     val centerY = positionY * heightPx + dragOffset.y
 
@@ -446,11 +470,14 @@ private fun androidx.compose.foundation.layout.BoxWithConstraintsScope.Transform
         Modifier
             .offset {
                 IntOffset(
-                    (centerX - boxSizePx / 2).roundToInt(),
-                    (centerY - boxSizePx / 2).roundToInt(),
+                    (centerX - boxW / 2).roundToInt(),
+                    (centerY - boxH / 2).roundToInt(),
                 )
             }
-            .size(with(density) { boxSizePx.toDp() })
+            .size(
+                width = with(density) { boxW.toDp() },
+                height = with(density) { boxH.toDp() },
+            )
             .border(1.5.dp, Color.White.copy(alpha = 0.9f))
             .pointerInput(positionX, positionY, scale) {
                 awaitEachGesture {
@@ -493,15 +520,42 @@ private fun RenameDialog(
     )
 }
 
-private fun probeDurationMs(context: Context, uri: Uri): Long {
+private fun probeDurationMs(context: Context, uri: Uri): Long =
+    probeMedia(context, uri).durationMs
+
+private data class MediaProbe(val durationMs: Long, val width: Int, val height: Int)
+
+/** Duration + native pixel size (rotation-corrected) in one retriever pass. */
+private fun probeMedia(context: Context, uri: Uri): MediaProbe {
     val retriever = MediaMetadataRetriever()
     return try {
         retriever.setDataSource(context, uri)
-        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+        val durationMs = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             ?.toLongOrNull() ?: 0L
+        var w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+            ?.toIntOrNull() ?: 0
+        var h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+            ?.toIntOrNull() ?: 0
+        val rotation = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+            ?.toIntOrNull() ?: 0
+        if (rotation == 90 || rotation == 270) {
+            val tmp = w; w = h; h = tmp
+        }
+        MediaProbe(durationMs, w, h)
     } catch (e: Exception) {
-        0L
+        MediaProbe(0, 0, 0)
     } finally {
         retriever.release()
     }
 }
+
+/** Pixel size of an image without decoding it. */
+private fun probeImageSize(context: Context, uri: Uri): Pair<Int, Int> = runCatching {
+    context.contentResolver.openInputStream(uri)?.use { input ->
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeStream(input, null, opts)
+        opts.outWidth.coerceAtLeast(0) to opts.outHeight.coerceAtLeast(0)
+    } ?: (0 to 0)
+}.getOrDefault(0 to 0)

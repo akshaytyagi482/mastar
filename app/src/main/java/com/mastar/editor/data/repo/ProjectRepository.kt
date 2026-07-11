@@ -48,6 +48,8 @@ class ProjectRepository(private val db: MastarDatabase) {
         sourceUri: String,
         sourceDurationMs: Long,
         timelineStartMs: Long,
+        sourceWidth: Int = 0,
+        sourceHeight: Int = 0,
     ): Long = db.clipDao().insertClip(
         ClipEntity(
             trackId = trackId,
@@ -56,9 +58,35 @@ class ProjectRepository(private val db: MastarDatabase) {
             sourceStartMs = 0,
             sourceEndMs = sourceDurationMs,
             sourceDurationMs = sourceDurationMs,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
             timelineStartMs = timelineStartMs,
         )
     )
+
+    /**
+     * Multi-lane overlays: returns an OVERLAY track whose time range is free
+     * for [startMs, startMs+durationMs), creating a new lane when every
+     * existing one is occupied — video over video over video, no manual
+     * lane management.
+     */
+    suspend fun findOrCreatePipLane(projectId: Long, startMs: Long, durationMs: Long): Long {
+        val fresh = db.projectDao().projectWithTracks(projectId)
+        val endMs = startMs + durationMs
+        fresh?.tracks
+            ?.filter { it.track.type == TrackType.OVERLAY }
+            ?.sortedBy { it.track.zOrder }
+            ?.forEach { lane ->
+                val occupied = lane.clips.any {
+                    it.timelineStartMs < endMs && it.timelineEndMs > startMs
+                }
+                if (!occupied) return lane.track.id
+            }
+        val topZ = (fresh?.tracks?.maxOfOrNull { it.track.zOrder } ?: 0) + 1
+        return db.trackDao().insertTrack(
+            TrackEntity(projectId = projectId, type = TrackType.OVERLAY, zOrder = topZ)
+        )
+    }
 
     suspend fun updateClip(clip: ClipEntity) = db.clipDao().updateClip(clip)
 
@@ -185,6 +213,8 @@ class ProjectRepository(private val db: MastarDatabase) {
         sourceUri: String,
         sourceDurationMs: Long,
         timelineStartMs: Long,
+        sourceWidth: Int = 0,
+        sourceHeight: Int = 0,
     ): Long = db.clipDao().insertClip(
         ClipEntity(
             trackId = trackId,
@@ -193,6 +223,8 @@ class ProjectRepository(private val db: MastarDatabase) {
             sourceStartMs = 0,
             sourceEndMs = sourceDurationMs,
             sourceDurationMs = sourceDurationMs,
+            sourceWidth = sourceWidth,
+            sourceHeight = sourceHeight,
             timelineStartMs = timelineStartMs,
             scale = 0.5f,
         )

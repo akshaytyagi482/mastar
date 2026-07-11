@@ -505,31 +505,14 @@ fun ToolPanel(
                 }
                 selectedDiamond?.let { t ->
                     val easingAt = clipKeyframes.firstOrNull { it.timeMs == t }?.easing
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Curve", color = Color.White, fontSize = 11.sp)
-                        listOf(
-                            EasingType.LINEAR to "Linear",
-                            EasingType.EASE_IN to "Ease in",
-                            EasingType.EASE_OUT to "Ease out",
-                            EasingType.EASE_IN_OUT to "Smooth",
-                        ).forEach { (easing, label) ->
-                            FilterChip(
-                                selected = easingAt == easing,
-                                onClick = { viewModel.setKeyframeEasing(t, easing) },
-                                label = { Text(label) },
-                            )
-                        }
-                        TextButton(onClick = {
+                    EasingGraphRow(
+                        selected = easingAt,
+                        onSelect = { easing -> viewModel.setKeyframeEasing(t, easing) },
+                        onDelete = {
                             viewModel.removeKeyframesAt(t)
                             selectedDiamond = null
-                        }) { Text("Delete ✕", color = Color(0xFFFF5252)) }
-                    }
+                        },
+                    )
                 }
             }
             EditorTool.VOLUME -> {
@@ -728,6 +711,73 @@ fun ToolPanel(
             )
             else -> Unit
         }
+    }
+}
+
+/** CapCut-style "Graphs": curve thumbnails you tap to set the segment easing. */
+@Composable
+fun EasingGraphRow(
+    selected: EasingType?,
+    onSelect: (EasingType) -> Unit,
+    onDelete: () -> Unit,
+) {
+    val graphs = listOf(
+        EasingType.LINEAR to "Linear",
+        EasingType.EASE_IN to "Ease In 1",
+        EasingType.EASE_IN_2 to "Ease In 2",
+        EasingType.EASE_IN_3 to "Ease In 3",
+        EasingType.EASE_OUT to "Ease Out 1",
+        EasingType.EASE_OUT_2 to "Ease Out 2",
+        EasingType.EASE_OUT_3 to "Ease Out 3",
+        EasingType.EASE_IN_OUT to "Smooth",
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Graphs", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+        graphs.forEach { (easing, label) ->
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (selected == easing) Saffron.copy(alpha = 0.25f)
+                        else Color.White.copy(alpha = 0.06f)
+                    )
+                    .clickable { onSelect(easing) }
+                    .padding(6.dp),
+            ) {
+                androidx.compose.foundation.Canvas(Modifier.size(width = 44.dp, height = 34.dp)) {
+                    val w = size.width
+                    val h = size.height
+                    val steps = 24
+                    var prev = Offset(0f, h)
+                    for (i in 1..steps) {
+                        val x = i / steps.toFloat()
+                        val y = com.mastar.editor.engine.keyframe.CubicBezierEasing
+                            .forType(easing, x)
+                        val point = Offset(x * w, h * (1f - y))
+                        drawLine(
+                            color = if (selected == easing) Saffron else Color(0xFF6EE7C8),
+                            start = prev,
+                            end = point,
+                            strokeWidth = 3f,
+                        )
+                        prev = point
+                    }
+                }
+                Text(
+                    label,
+                    color = if (selected == easing) Saffron else Color.White.copy(alpha = 0.8f),
+                    fontSize = 9.sp,
+                )
+            }
+        }
+        TextButton(onClick = onDelete) { Text("Delete ✕", color = Color(0xFFFF5252)) }
     }
 }
 

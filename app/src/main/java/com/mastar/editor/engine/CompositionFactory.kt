@@ -48,7 +48,8 @@ object CompositionFactory {
     /** Everything the timeline contributes to a render. */
     data class Layers(
         val videoClips: List<ClipEntity>,
-        val overlayClips: List<ClipEntity>,
+        /** PIP lanes bottom-to-top; each lane is one overlay track's clips. */
+        val overlayLanes: List<List<ClipEntity>>,
         val audioClips: List<ClipEntity>,
         val textClips: List<ClipEntity>,
         val filterClips: List<ClipEntity> = emptyList(),
@@ -77,19 +78,21 @@ object CompositionFactory {
         )
 
         // Photo PIP renders via composition-level overlays (single-input
-        // safe); only VIDEO PIP needs the multi-input compositor.
-        val allOverlayClips =
-            if (includeOverlayTrack) layers.overlayClips.sortedBy { it.timelineStartMs }
-            else emptyList()
-        val videoPipClips = allOverlayClips.filter { it.type == ClipType.VIDEO }
-        val imagePipClips = allOverlayClips.filter { it.type == ClipType.IMAGE }
+        // safe); only VIDEO PIP lanes need the multi-input compositor.
+        val lanes = if (includeOverlayTrack) layers.overlayLanes else emptyList()
+        val videoPipLanes = lanes
+            .map { lane -> lane.filter { it.type == ClipType.VIDEO }.sortedBy { it.timelineStartMs } }
+            .filter { it.isNotEmpty() }
+        val imagePipClips = lanes.flatten()
+            .filter { it.type == ClipType.IMAGE }
+            .sortedBy { it.timelineStartMs }
 
         val sequences = buildList {
             add(mainSequence)
-            if (videoPipClips.isNotEmpty()) {
+            videoPipLanes.forEach { laneClips ->
                 add(
                     videoSequence(
-                        videoPipClips, layers.keyframesByClip, outWidth, outHeight,
+                        laneClips, layers.keyframesByClip, outWidth, outHeight,
                         isPipLane = true,
                         withTransitions = false,
                     )
@@ -109,14 +112,14 @@ object CompositionFactory {
                 )
             )
             .setVideoCompositorSettings(
-                PipCompositorSettings(videoPipClips, layers.keyframesByClip)
+                PipCompositorSettings(videoPipLanes, layers.keyframesByClip, minOf(outWidth, outHeight))
             )
             .build()
     }
 
     /** True when the composition needs the multi-input video graph. */
     fun needsMultipleInputs(layers: Layers): Boolean =
-        layers.overlayClips.any { it.type == ClipType.VIDEO }
+        layers.overlayLanes.any { lane -> lane.any { it.type == ClipType.VIDEO } }
 
     /**
      * Maps each VIDEO overlay clip's (possibly keyframed) placement onto the
@@ -124,17 +127,19 @@ object CompositionFactory {
      * frames between overlay clips miss the lookup → fully transparent.
      */
     private class PipCompositorSettings(
-        private val overlayClips: List<ClipEntity>,
+        private val videoPipLanes: List<List<ClipEntity>>,
         private val keyframesByClip: Map<Long, List<KeyframeEntity>>,
+        private val outShortSide: Int,
     ) : VideoCompositorSettings {
 
         override fun getOutputSize(inputSizes: List<Size>): Size = inputSizes[0]
 
         override fun getOverlaySettings(inputId: Int, presentationTimeUs: Long): OverlaySettings {
-            // inputId 0 is the primary sequence; overlays are sequence 1.
-            if (inputId != 1) return StaticOverlaySettings.Builder().build()
+            // inputId 0 is the primary sequence; PIP lanes follow in order.
+            val lane = videoPipLanes.getOrNull(inputId - 1)
+                ?: return StaticOverlaySettings.Builder().build()
             val timeMs = presentationTimeUs / 1000
-            val clip = overlayClips.firstOrNull {
+            val clip = lane.firstOrNull {
                 timeMs in it.timelineStartMs until it.timelineEndMs
             } ?: return StaticOverlaySettings.Builder().setAlphaScale(0f).build()
 
@@ -288,7 +293,7 @@ object CompositionFactory {
                 clip.payload?.let { payload ->
                     add(
                         TimedTextOverlay(
-                            payload, clip.timelineStartMs, clip.timelineEndMs, textPxPerSp
+                            payload, clip, layers.keyframesByClip[clip.id].orEmpty(), textPxPerSp
                         )
                     )
                 }
@@ -346,11 +351,26 @@ object CompositionFactory {
                 }
             }
             addAll(EffectResolver.colorEffectsFor(this@toEditedMediaItem, keyframes))
-            add(
-                Presentation.createForWidthAndHeight(
-                    outWidth, outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+            if (isPipLane && sourceWidth > 0 && sourceHeight > 0) {
+                // PIP keeps the MEDIA's aspect (no canvas crop): frame sized
+                // so scale=1 spans the canvas short side at native aspect.
+                val aspect = sourceWidth.toFloat() / sourceHeight
+                val shortSide = minOf(outWidth, outHeight)
+                val (fitW, fitH) =
+                    if (aspect >= 1f) shortSide to (shortSide / aspect).toInt()
+                    else (shortSide * aspect).toInt() to shortSide
+                add(
+                    Presentation.createForWidthAndHeight(
+                        fitW and -2, fitH and -2, Presentation.LAYOUT_SCALE_TO_FIT
+                    )
                 )
-            )
+            } else {
+                add(
+                    Presentation.createForWidthAndHeight(
+                        outWidth, outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                    )
+                )
+            }
             // Transform AFTER the canvas fit so it's actually visible.
             // PIP lanes get their placement from the compositor instead.
             if (!isPipLane) {

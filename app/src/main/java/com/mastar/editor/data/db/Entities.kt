@@ -69,6 +69,9 @@ data class ClipEntity(
     val sourceEndMs: Long,
     /** Full length of the source file — the ceiling when re-expanding a trim. */
     val sourceDurationMs: Long = 0,
+    /** Native pixel size of the source media (0 = unknown, probed at import). */
+    val sourceWidth: Int = 0,
+    val sourceHeight: Int = 0,
     /** Where the clip sits on the project timeline. */
     val timelineStartMs: Long,
     /** 1.0 = normal. Raw speed is handled by Media3; smooth curves come later. */
@@ -131,7 +134,11 @@ data class ClipEntity(
 /** Animatable properties for the keyframe system. */
 enum class KeyframeProperty { POSITION_X, POSITION_Y, SCALE, ROTATION, OPACITY, VOLUME }
 
-enum class EasingType { LINEAR, EASE_IN, EASE_OUT, EASE_IN_OUT }
+enum class EasingType {
+    LINEAR, EASE_IN, EASE_OUT, EASE_IN_OUT,
+    // CapCut-style graph strengths.
+    EASE_IN_2, EASE_IN_3, EASE_OUT_2, EASE_OUT_3,
+}
 
 @Entity(
     tableName = "keyframes",

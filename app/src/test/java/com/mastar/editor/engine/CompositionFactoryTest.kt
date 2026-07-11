@@ -46,7 +46,7 @@ class CompositionFactoryTest {
     fun `simple timeline has one sequence with all durations set`() {
         val layers = CompositionFactory.Layers(
             videoClips = listOf(videoClip(1, 0), videoClip(2, 3000)),
-            overlayClips = emptyList(),
+            overlayLanes = emptyList(),
             audioClips = emptyList(),
             textClips = emptyList(),
         )
@@ -67,7 +67,7 @@ class CompositionFactoryTest {
         val layers = CompositionFactory.Layers(
             // Second clip starts at 5000 -> 2000ms hole after the first.
             videoClips = listOf(videoClip(1, 0), videoClip(2, 5000)),
-            overlayClips = emptyList(),
+            overlayLanes = emptyList(),
             audioClips = emptyList(),
             textClips = emptyList(),
         )
@@ -82,7 +82,7 @@ class CompositionFactoryTest {
     fun `offset audio is positioned with generated silence`() {
         val layers = CompositionFactory.Layers(
             videoClips = listOf(videoClip(1, 0, durationMs = 10_000)),
-            overlayClips = emptyList(),
+            overlayLanes = emptyList(),
             audioClips = listOf(
                 videoClip(9, startMs = 2000, durationMs = 4000, trackId = 2, type = ClipType.AUDIO)
             ),
@@ -101,7 +101,9 @@ class CompositionFactoryTest {
     fun `pip overlay becomes a second video sequence with durations`() {
         val layers = CompositionFactory.Layers(
             videoClips = listOf(videoClip(1, 0, durationMs = 8000)),
-            overlayClips = listOf(videoClip(5, startMs = 1000, durationMs = 2000, trackId = 3)),
+            overlayLanes = listOf(
+                listOf(videoClip(5, startMs = 1000, durationMs = 2000, trackId = 3))
+            ),
             audioClips = emptyList(),
             textClips = emptyList(),
         )
@@ -117,7 +119,7 @@ class CompositionFactoryTest {
     fun `empty timeline is rejected loudly`() {
         val layers = CompositionFactory.Layers(
             videoClips = emptyList(),
-            overlayClips = emptyList(),
+            overlayLanes = emptyList(),
             audioClips = emptyList(),
             textClips = emptyList(),
         )

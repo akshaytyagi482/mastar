@@ -55,18 +55,17 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.7.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.7.0.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.8.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.8.0.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
 3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
 
-> v0.7.0 — keyframes & transform, done right: transform now runs after the
-> canvas fit (it actually shows), CapCut-style auto-keyframing (edit at the
-> playhead → diamond drops automatically), easing curves per diamond, pinch
-> to resize + drag to place any clip in the preview, editable text clips,
-> photo overlays on a device-safe render path, FILTER LAYERS (filter as a
-> timeline clip covering a time range), lighter 540p preview.
+> v0.8.0 — multi-lane overlays (video over video over video, lanes appear
+> automatically), photo/text/sticker/filter clips stretch to any length,
+> overlays keep their true aspect ratio (no more square crop), text is fully
+> transformable + keyframable, CapCut-style Graphs (8 easing curves with
+> thumbnails), audio waveform fixes, smoother preview (debounced rebuilds).
 > See [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Building

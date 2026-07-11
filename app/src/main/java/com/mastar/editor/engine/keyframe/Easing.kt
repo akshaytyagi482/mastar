@@ -63,12 +63,20 @@ class CubicBezierEasing(
         val EASE_IN = CubicBezierEasing(0.42f, 0f, 1f, 1f)
         val EASE_OUT = CubicBezierEasing(0f, 0f, 0.58f, 1f)
         val EASE_IN_OUT = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
+        val EASE_IN_2 = CubicBezierEasing(0.55f, 0.055f, 0.675f, 0.19f)
+        val EASE_IN_3 = CubicBezierEasing(0.755f, 0.05f, 0.855f, 0.06f)
+        val EASE_OUT_2 = CubicBezierEasing(0.215f, 0.61f, 0.355f, 1f)
+        val EASE_OUT_3 = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
 
         fun forType(type: EasingType, t: Float): Float = when (type) {
             EasingType.LINEAR -> t.coerceIn(0f, 1f)
             EasingType.EASE_IN -> EASE_IN.ease(t)
             EasingType.EASE_OUT -> EASE_OUT.ease(t)
             EasingType.EASE_IN_OUT -> EASE_IN_OUT.ease(t)
+            EasingType.EASE_IN_2 -> EASE_IN_2.ease(t)
+            EasingType.EASE_IN_3 -> EASE_IN_3.ease(t)
+            EasingType.EASE_OUT_2 -> EASE_OUT_2.ease(t)
+            EasingType.EASE_OUT_3 -> EASE_OUT_3.ease(t)
         }
     }
 }
