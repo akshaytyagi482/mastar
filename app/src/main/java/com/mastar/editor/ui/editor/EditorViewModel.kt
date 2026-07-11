@@ -14,6 +14,7 @@ import com.mastar.editor.data.db.ProjectWithTracks
 import com.mastar.editor.data.db.TrackType
 import com.mastar.editor.engine.CompositionFactory
 import com.mastar.editor.engine.export.ExportEngine
+import com.mastar.editor.engine.export.GalleryPublisher
 import com.mastar.editor.engine.playback.PreviewEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,10 @@ class EditorViewModel(
 
     private val _exportState = MutableStateFlow<ExportEngine.State>(ExportEngine.State.Idle)
     val exportState: StateFlow<ExportEngine.State> = _exportState
+
+    /** Gallery path of the last export, e.g. "Movies/Mastar/Mastar_....mp4". */
+    private val _exportLocation = MutableStateFlow<String?>(null)
+    val exportLocation: StateFlow<String?> = _exportLocation
 
     // CapCut-style undo/redo: every edit snapshots the full clip list (tiny —
     // it's metadata rows, not media). Restore rewrites the DB in one txn.
@@ -325,7 +330,7 @@ class EditorViewModel(
 
     fun seekTo(timelineMs: Long) = previewEngine.seekTo(timelineMs)
 
-    fun togglePlayback() = previewEngine.togglePlayback()
+    fun togglePlayback(fromMs: Long) = previewEngine.togglePlayback(fromMs)
 
     fun export(outputDir: File, settings: ExportEngine.Settings) {
         val snapshot = project.value ?: return
@@ -333,6 +338,7 @@ class EditorViewModel(
         if (layers.videoClips.isEmpty()) return
         // Free the decoders for the transformer on budget devices.
         previewEngine.pause()
+        _exportLocation.value = null
         val outputFile = File(outputDir, "mastar_${snapshot.project.id}_export.mp4")
         exportEngine.export(
             layers = layers,
@@ -340,7 +346,16 @@ class EditorViewModel(
             canvasWidth = snapshot.project.canvasWidth,
             canvasHeight = snapshot.project.canvasHeight,
             settings = settings,
-        ) { state -> _exportState.value = state }
+        ) { state ->
+            _exportState.value = state
+            if (state is ExportEngine.State.Done) {
+                // Publish into the gallery so the user can actually find it.
+                viewModelScope.launch(Dispatchers.IO) {
+                    _exportLocation.value =
+                        GalleryPublisher.publish(getApplication(), state.outputFile)
+                }
+            }
+        }
 
         // Drive the progress percentage while the transformer runs.
         viewModelScope.launch {

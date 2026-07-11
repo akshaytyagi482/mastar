@@ -142,6 +142,7 @@ fun EditorTopBar(
     canvasWidth: Int,
     canvasHeight: Int,
     exportState: ExportEngine.State,
+    exportLocation: String?,
     onBack: () -> Unit,
     onSetCanvas: (width: Int, height: Int) -> Unit,
     onExportClick: () -> Unit,
@@ -168,7 +169,7 @@ fun EditorTopBar(
                 modifier = Modifier.padding(end = 8.dp),
             )
             is ExportEngine.State.Done -> Text(
-                "Saved ✓",
+                if (exportLocation != null) "Saved to Gallery ✓" else "Saved ✓",
                 color = Color(0xFF4CAF50),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(end = 8.dp),

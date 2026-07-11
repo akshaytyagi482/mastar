@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -58,6 +60,8 @@ fun EditorScreen(
     val canUndo by viewModel.canUndo.collectAsState()
     val canRedo by viewModel.canRedo.collectAsState()
     val previewPlayer by viewModel.previewEngine.playerFlow.collectAsState()
+    val previewError by viewModel.previewEngine.errorFlow.collectAsState()
+    val exportLocation by viewModel.exportLocation.collectAsState()
     val timelineState = rememberTimelineState()
 
     var activeTool by remember { mutableStateOf<EditorTool?>(null) }
@@ -147,6 +151,7 @@ fun EditorScreen(
             canvasWidth = project?.project?.canvasWidth ?: 1080,
             canvasHeight = project?.project?.canvasHeight ?: 1920,
             exportState = exportState,
+            exportLocation = exportLocation,
             onBack = onBack,
             onSetCanvas = { w, h -> viewModel.setCanvas(w, h) },
             onExportClick = { showExportDialog = true },
@@ -173,6 +178,15 @@ fun EditorScreen(
                 modifier = Modifier.fillMaxSize(),
             )
             PreviewOverlays(viewModel, timelineState.playheadMs)
+            previewError?.let { message ->
+                androidx.compose.material3.Text(
+                    text = message,
+                    color = Color(0xFFFF5252),
+                    modifier = Modifier.align(androidx.compose.ui.Alignment.BottomStart)
+                        .background(Color.Black.copy(alpha = 0.6f))
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
         }
 
         TransportRow(
@@ -181,7 +195,7 @@ fun EditorScreen(
             isPlaying = isPlaying,
             canUndo = canUndo,
             canRedo = canRedo,
-            onPlayPause = viewModel::togglePlayback,
+            onPlayPause = { viewModel.togglePlayback(timelineState.playheadMs) },
             onStepFrame = { deltaMs ->
                 val target = (timelineState.playheadMs + deltaMs).coerceAtLeast(0)
                 timelineState.playheadMs = target

@@ -1,9 +1,11 @@
 package com.mastar.editor.engine.playback
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.PreviewingMultipleInputVideoGraph
 import androidx.media3.transformer.CompositionPlayer
 import com.mastar.editor.engine.CompositionFactory
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -11,26 +13,27 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Timeline preview built on Media3 CompositionPlayer: it plays the EXACT
- * Composition that the export encodes — per-clip filters, adjustments,
- * transforms, speed, volume, fades, voice effects, PIP overlays, and
- * burned-in text all render live. No effect swapping mid-playback (that was
- * v0.3's black-screen bug); every edit rebuilds the composition instead.
+ * Composition that the export encodes. Constraints honored (each was a
+ * v0.4 black-screen cause):
+ *  - a CompositionPlayer accepts exactly one composition → rebuild per edit
+ *  - no sequence gaps → CompositionFactory inserts real filler media
+ *  - every item needs durationUs → sourced from ClipEntity.sourceDurationMs
+ *  - PIP needs the multiple-input video graph
  */
 @UnstableApi
 class PreviewEngine(private val context: Context) {
 
-    /**
-     * The active player. Rebuilt (not mutated) on every timeline change —
-     * CompositionPlayer is designed around one composition per instance.
-     * The UI observes this flow and re-attaches the surface.
-     */
     private val _player = MutableStateFlow<Player?>(null)
     val playerFlow: StateFlow<Player?> = _player
     val player: Player? get() = _player.value
 
-    private var currentLayers: CompositionFactory.Layers? = null
+    /** Human-readable preview failure, surfaced in the UI instead of silence. */
+    private val _error = MutableStateFlow<String?>(null)
+    val errorFlow: StateFlow<String?> = _error
+
     private var canvasWidth = 1080
     private var canvasHeight = 1920
+    private var lastSeekUptimeMs = 0L
 
     /** Preview renders at reduced resolution to stay cool on budget phones. */
     private fun previewSize(): Pair<Int, Int> {
@@ -49,45 +52,63 @@ class PreviewEngine(private val context: Context) {
 
     /** Rebuilds the preview from the timeline, keeping the playhead position. */
     fun setTimeline(layers: CompositionFactory.Layers) {
-        currentLayers = layers
         rebuild(layers, includeOverlayTrack = true)
     }
 
     private fun rebuild(layers: CompositionFactory.Layers, includeOverlayTrack: Boolean) {
         val previousPosition = _player.value?.currentPosition ?: 0L
         releasePlayer()
+        _error.value = null
 
         if (layers.videoClips.isEmpty()) return
 
         val (w, h) = previewSize()
-        val newPlayer = CompositionPlayer.Builder(context).build()
+        val builder = CompositionPlayer.Builder(context)
+        if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
+            // The default graph only composites one video sequence; PIP
+            // requires the multi-input GL graph.
+            builder.setPreviewingVideoGraphFactory(PreviewingMultipleInputVideoGraph.Factory())
+        }
+        val newPlayer = builder.build()
+
         newPlayer.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 // A device-specific compositor failure must not brick the
-                // preview: retry once without the PIP layer.
+                // preview: retry once without the PIP layer, else tell the user.
                 if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
                     rebuild(layers, includeOverlayTrack = false)
+                } else {
+                    _error.value = "Preview error: ${error.errorCodeName}"
                 }
             }
         })
 
         runCatching {
             newPlayer.setComposition(
-                CompositionFactory.build(layers, w, h, includeOverlayTrack)
+                CompositionFactory.build(context, layers, w, h, includeOverlayTrack)
             )
             newPlayer.prepare()
             newPlayer.seekTo(previousPosition)
             _player.value = newPlayer
-        }.onFailure {
+        }.onFailure { failure ->
             newPlayer.release()
             if (includeOverlayTrack && layers.overlayClips.isNotEmpty()) {
                 rebuild(layers, includeOverlayTrack = false)
+            } else {
+                _error.value = "Preview error: ${failure.message}"
             }
         }
     }
 
-    /** Composition time == project-timeline time: seeks map 1:1. */
-    fun seekTo(timelineMs: Long) {
+    /**
+     * Composition time == project-timeline time. Scrub seeks are throttled:
+     * CompositionPlayer re-primes its pipeline per seek, so flooding it
+     * during a drag stalls rendering.
+     */
+    fun seekTo(timelineMs: Long, force: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - lastSeekUptimeMs < 150) return
+        lastSeekUptimeMs = now
         _player.value?.seekTo(timelineMs.coerceAtLeast(0))
     }
 
@@ -95,17 +116,19 @@ class PreviewEngine(private val context: Context) {
 
     val isPlaying: Boolean get() = _player.value?.isPlaying == true
 
-    fun play() {
-        _player.value?.play()
-    }
-
     fun pause() {
         _player.value?.pause()
     }
 
-    fun togglePlayback() {
+    /** Play from an exact playhead position (guarantees UI/player sync). */
+    fun togglePlayback(fromMs: Long) {
         val p = _player.value ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        if (p.isPlaying) {
+            p.pause()
+        } else {
+            seekTo(fromMs, force = true)
+            p.play()
+        }
     }
 
     private fun releasePlayer() {

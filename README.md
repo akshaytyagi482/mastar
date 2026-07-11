@@ -55,18 +55,17 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.4.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.4.0.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.5.0.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.5.0.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).
 3. Open **Mastar**, tap **+** to create a project, tap **+** in the toolbar to add videos, and start editing.
 
-> v0.4.0: the preview now plays the exact composition that exports
-> (CompositionPlayer) — filters, volume, fades, voice effects, and text all
-> render live, and the black-screen-after-filter bug is gone. New: PIP
-> multi-layer overlays (video/photo over the main track with position, scale,
-> opacity) and the Mastar launcher icon.
-> See [docs/FEATURES.md](docs/FEATURES.md) for the full parity matrix.
+> v0.5.0: fixes the black preview (the preview engine violated three
+> CompositionPlayer constraints — now regression-tested on every build),
+> exports now save into your **gallery (Movies/Mastar)**, timeline thumbnails
+> load ~10x faster (sync-frame seeks + caching), and PIP preview uses the
+> multi-input GL graph. See [docs/FEATURES.md](docs/FEATURES.md).
 
 ## Building
 

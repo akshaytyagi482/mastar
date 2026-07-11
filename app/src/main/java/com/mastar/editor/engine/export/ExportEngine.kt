@@ -55,7 +55,8 @@ class ExportEngine(private val context: Context) {
         val outWidth = ((canvasWidth * scale).toInt()) and -2
         val outHeight = ((canvasHeight * scale).toInt()) and -2
 
-        val composition: Composition = CompositionFactory.build(layers, outWidth, outHeight)
+        val composition: Composition =
+            CompositionFactory.build(context, layers, outWidth, outHeight)
 
         val encoderFactory = DefaultEncoderFactory.Builder(context)
             .setRequestedVideoEncoderSettings(

@@ -1,5 +1,6 @@
 package com.mastar.editor.engine
 
+import android.content.Context
 import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.OverlaySettings
@@ -18,15 +19,17 @@ import androidx.media3.transformer.Effects
 import com.google.common.collect.ImmutableList
 import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
+import com.mastar.editor.engine.audio.Silence
 import com.mastar.editor.engine.effects.EffectResolver
 import com.mastar.editor.engine.effects.TimedTextOverlay
 
 /**
  * Builds the Media3 Composition that BOTH the preview (CompositionPlayer)
- * and the export (Transformer) play. One code path = true WYSIWYG: per-clip
- * filters, adjustments, transforms, opacity, speed, volume, fades, voice
- * effects, PIP overlays, and burned-in text are identical on screen and in
- * the output file.
+ * and the export (Transformer) play. One code path = true WYSIWYG.
+ *
+ * CompositionPlayer constraints honored here (they were the v0.4 black
+ * screen): no sequence gaps (real filler media instead — black frames for
+ * video, generated silence WAVs for audio) and durationUs set on every item.
  */
 @UnstableApi
 object CompositionFactory {
@@ -39,7 +42,10 @@ object CompositionFactory {
         val textClips: List<ClipEntity>,
     )
 
+    private const val GAP_IMAGE_URI = "asset:///gap_black.png"
+
     fun build(
+        context: Context,
         layers: Layers,
         outWidth: Int,
         outHeight: Int,
@@ -47,7 +53,12 @@ object CompositionFactory {
     ): Composition {
         require(layers.videoClips.isNotEmpty()) { "Timeline is empty" }
 
-        val mainSequence = mainVideoSequence(layers.videoClips, outWidth, outHeight)
+        val mainSequence = videoSequence(
+            layers.videoClips.sortedBy { it.timelineStartMs },
+            outWidth, outHeight,
+            includeTransform = true,
+            muteAudio = false,
+        )
 
         val overlayClips =
             if (includeOverlayTrack) layers.overlayClips.sortedBy { it.timelineStartMs }
@@ -55,12 +66,17 @@ object CompositionFactory {
 
         val sequences = buildList {
             add(mainSequence)
-            overlaySequence(overlayClips, outWidth, outHeight)?.let { add(it) }
-            audioSequence(layers.audioClips)?.let { add(it) }
+            if (overlayClips.isNotEmpty()) {
+                add(
+                    videoSequence(
+                        overlayClips, outWidth, outHeight,
+                        includeTransform = false,
+                        muteAudio = true,
+                    )
+                )
+            }
+            audioSequence(context, layers.audioClips)?.let { add(it) }
         }
-
-        val hasLeadingAudioGap =
-            layers.audioClips.minOfOrNull { it.timelineStartMs }?.let { it > 0 } ?: false
 
         // Text proportion is anchored to a 360sp-wide reference canvas.
         val textPxPerSp = minOf(outWidth, outHeight) / 360f
@@ -68,14 +84,14 @@ object CompositionFactory {
         return Composition.Builder(sequences)
             .setEffects(compositionEffects(layers.textClips, textPxPerSp))
             .setVideoCompositorSettings(PipCompositorSettings(overlayClips))
-            .experimentalSetForceAudioTrack(hasLeadingAudioGap)
             .build()
     }
 
     /**
      * Maps each overlay clip's position/scale/opacity onto the compositor.
      * Presentation time is absolute composition time, so the clip lookup is
-     * a direct timeline query — this is what makes PIP placement per-clip.
+     * a direct timeline query. Gap-filler frames between overlay clips miss
+     * the lookup and render fully transparent.
      */
     private class PipCompositorSettings(
         private val overlayClips: List<ClipEntity>,
@@ -104,63 +120,70 @@ object CompositionFactory {
         }
     }
 
-    /** Main track: clips back-to-back, black gaps preserved via addGap. */
-    private fun mainVideoSequence(
+    /** A video-lane sequence: clips at exact offsets, black frames in gaps. */
+    private fun videoSequence(
         clips: List<ClipEntity>,
         outWidth: Int,
         outHeight: Int,
+        includeTransform: Boolean,
+        muteAudio: Boolean,
     ): EditedMediaItemSequence {
         val builder = EditedMediaItemSequence.Builder()
         var cursorMs = 0L
-        for (clip in clips.sortedBy { it.timelineStartMs }) {
+        for (clip in clips) {
             val gapMs = clip.timelineStartMs - cursorMs
-            if (gapMs > 0) builder.addGap(gapMs * 1000)
-            builder.addItem(clip.toEditedMediaItem(outWidth, outHeight, includeTransform = true))
-            cursorMs = clip.timelineEndMs
-        }
-        return builder.build()
-    }
-
-    /**
-     * PIP track: second video sequence. Gaps between overlay clips render
-     * fully transparent via the compositor's alpha (clip lookup misses).
-     */
-    private fun overlaySequence(
-        overlayClips: List<ClipEntity>,
-        outWidth: Int,
-        outHeight: Int,
-    ): EditedMediaItemSequence? {
-        if (overlayClips.isEmpty()) return null
-        val builder = EditedMediaItemSequence.Builder()
-        var cursorMs = 0L
-        for (clip in overlayClips) {
-            val gapMs = clip.timelineStartMs - cursorMs
-            if (gapMs > 0) builder.addGap(gapMs * 1000)
-            // Transform is handled by the compositor (scale/rotation/alpha),
-            // so item effects carry only color work.
+            if (gapMs > 0) builder.addItem(blackFiller(gapMs, outWidth, outHeight))
             builder.addItem(
-                clip.toEditedMediaItem(
-                    outWidth, outHeight,
-                    includeTransform = false,
-                    muteAudio = true,
-                )
+                clip.toEditedMediaItem(outWidth, outHeight, includeTransform, muteAudio)
             )
             cursorMs = clip.timelineEndMs
         }
         return builder.build()
     }
 
+    /** Black still stretched over a timeline hole (invisible on PIP lanes). */
+    private fun blackFiller(durationMs: Long, outWidth: Int, outHeight: Int): EditedMediaItem =
+        EditedMediaItem.Builder(
+            MediaItem.Builder()
+                .setUri(Uri.parse(GAP_IMAGE_URI))
+                .setImageDurationMs(durationMs)
+                .build()
+        )
+            .setFrameRate(30)
+            .setEffects(
+                Effects(
+                    emptyList(),
+                    listOf(
+                        Presentation.createForWidthAndHeight(
+                            outWidth, outHeight, Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
+                        )
+                    ),
+                )
+            )
+            .build()
+
     /**
-     * Music/voiceover sequence: silence gaps position each audio clip at its
-     * exact timeline offset; the mixer does the rest.
+     * Music/voiceover sequence: generated silence positions each audio clip
+     * at its exact timeline offset; the mixer does the rest.
      */
-    private fun audioSequence(audioClips: List<ClipEntity>): EditedMediaItemSequence? {
+    private fun audioSequence(
+        context: Context,
+        audioClips: List<ClipEntity>,
+    ): EditedMediaItemSequence? {
         if (audioClips.isEmpty()) return null
         val builder = EditedMediaItemSequence.Builder()
         var cursorMs = 0L
         for (clip in audioClips.sortedBy { it.timelineStartMs }) {
             val gapMs = clip.timelineStartMs - cursorMs
-            if (gapMs > 0) builder.addGap(gapMs * 1000)
+            if (gapMs > 0) {
+                builder.addItem(
+                    EditedMediaItem.Builder(
+                        MediaItem.fromUri(Silence.wavUri(context, gapMs))
+                    )
+                        .setDurationUs(gapMs * 1000)
+                        .build()
+                )
+            }
             val item = MediaItem.Builder()
                 .setUri(Uri.parse(clip.sourceUri))
                 .setClippingConfiguration(
@@ -173,6 +196,7 @@ object CompositionFactory {
             builder.addItem(
                 EditedMediaItem.Builder(item)
                     .setRemoveVideo(true)
+                    .setDurationUs(clip.fullSourceDurationUs())
                     .setEffects(Effects(EffectResolver.audioProcessorsFor(clip), emptyList()))
                     .build()
             )
@@ -194,6 +218,10 @@ object CompositionFactory {
             listOf(OverlayEffect(ImmutableList.copyOf<TextureOverlay>(overlays))),
         )
     }
+
+    /** durationUs is the duration BEFORE clipping (the full source file). */
+    private fun ClipEntity.fullSourceDurationUs(): Long =
+        (if (sourceDurationMs > 0) sourceDurationMs else sourceEndMs) * 1000
 
     private fun ClipEntity.toEditedMediaItem(
         outWidth: Int,
@@ -233,7 +261,11 @@ object CompositionFactory {
                     videoEffects,
                 )
             )
-        if (isImage) builder.setFrameRate(30)
+        if (isImage) {
+            builder.setFrameRate(30)
+        } else {
+            builder.setDurationUs(fullSourceDurationUs())
+        }
         if (muteAudio && !isImage) builder.setRemoveAudio(true)
         return builder.build()
     }

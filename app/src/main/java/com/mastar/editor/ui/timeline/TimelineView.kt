@@ -47,9 +47,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.media.MediaMetadataRetriever
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.request.videoFrameMillis
+import coil.request.videoFrameOption
 import com.mastar.editor.data.db.ClipEntity
 import com.mastar.editor.data.db.ClipType
 import com.mastar.editor.data.db.TrackType
@@ -488,12 +490,17 @@ private fun Filmstrip(clip: ClipEntity, clipWidth: androidx.compose.ui.unit.Dp) 
 
     Row(Modifier.fillMaxSize()) {
         repeat(frameCount) { i ->
-            val frameTimeMs = clip.sourceStartMs + sourceSpanMs * i / frameCount
+            // Quantize to whole seconds so zoom changes re-hit Coil's cache,
+            // and grab the nearest sync frame — an order of magnitude faster
+            // than exact-frame seeks on long videos.
+            val frameTimeMs =
+                ((clip.sourceStartMs + sourceSpanMs * i / frameCount) / 1000) * 1000
             AsyncImage(
                 model = ImageRequest.Builder(context)
                     .data(clip.sourceUri)
                     .videoFrameMillis(frameTimeMs)
-                    .size(96)
+                    .videoFrameOption(MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    .size(64)
                     .build(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
