@@ -477,6 +477,19 @@ class EditorViewModel(
         }
     }
 
+    /** Retimes a diamond: moves every keyframe at [fromMs] to [toMs]. */
+    fun moveKeyframeDiamond(clipId: Long, fromMs: Long, toMs: Long) {
+        viewModelScope.launch {
+            if (fromMs == toMs) return@launch
+            val kfs = keyframesFor(clipId)
+            val moving = kfs.filter { it.timeMs == fromMs }
+            if (moving.isEmpty()) return@launch
+            // A diamond already at the target gets replaced.
+            kfs.filter { it.timeMs == toMs }.forEach { repository.deleteKeyframe(it.id) }
+            moving.forEach { repository.updateKeyframe(it.copy(timeMs = toMs)) }
+        }
+    }
+
     /** Sets the interpolation curve leaving the diamond at [timeMs]. */
     fun setKeyframeEasing(timeMs: Long, easing: EasingType) {
         viewModelScope.launch {

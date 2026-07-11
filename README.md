@@ -55,7 +55,7 @@ and the phase-by-phase roadmap.
 
 ## 📲 Install on your phone
 
-**[⬇️ Download mastar-v0.8.1.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.8.1.apk)** (~25 MB)
+**[⬇️ Download mastar-v0.8.2.apk](https://github.com/akshaytyagi482/mastar/raw/main/dist/mastar-v0.8.2.apk)** (~25 MB)
 
 1. Open the link above on your Android phone (or scan the repo from GitHub mobile → `dist/` → tap the APK → Download).
 2. When prompted, allow your browser to **install unknown apps** (Settings → Install unknown apps).

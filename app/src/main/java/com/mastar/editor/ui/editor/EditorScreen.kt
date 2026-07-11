@@ -306,6 +306,7 @@ fun EditorScreen(
                 onSeek = viewModel::seekTo,
                 onAddAudio = { pickAudio.launch(arrayOf("audio/*")) },
                 onMenuAction = viewModel::onClipMenuAction,
+                onMoveKeyframe = viewModel::moveKeyframeDiamond,
             ),
             modifier = Modifier.weight(1f),
         )

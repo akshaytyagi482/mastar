@@ -91,6 +91,9 @@ class PreviewEngine(private val context: Context) {
             newPlayer.setComposition(
                 CompositionFactory.build(context, layers, w, h, includeOverlayTrack)
             )
+            // Loop at the timeline end instead of running past it
+            // (CompositionPlayer supports REPEAT_MODE_ALL or OFF only).
+            newPlayer.repeatMode = Player.REPEAT_MODE_ALL
             newPlayer.prepare()
             newPlayer.seekTo(previousPosition)
             _player.value = newPlayer

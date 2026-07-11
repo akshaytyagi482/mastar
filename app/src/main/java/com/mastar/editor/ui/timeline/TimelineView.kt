@@ -94,6 +94,8 @@ data class TimelineActions(
     val onSeek: (Long) -> Unit,
     val onAddAudio: () -> Unit,
     val onMenuAction: (clipId: Long, action: ClipMenuAction) -> Unit,
+    /** Drag a keyframe diamond to a new time within its clip. */
+    val onMoveKeyframe: (clipId: Long, fromMs: Long, toMs: Long) -> Unit,
 )
 
 /**
@@ -506,18 +508,48 @@ private fun ClipView(
                 if (clip.hidden) Badge(Icons.Default.VisibilityOff)
             }
 
-            // Keyframe diamonds along the clip.
+            // Keyframe diamonds along the clip — hold & drag to retime
+            // (enabled when the clip is selected).
             keyframeTimesMs.distinct().forEach { timeMs ->
-                val x = state.msToPx(timeMs)
-                Box(
-                    Modifier
-                        .offset { IntOffset(x.roundToInt() - 4, 0) }
-                        .align(Alignment.CenterStart)
-                        .size(8.dp)
-                        .graphicsLayer(rotationZ = 45f)
-                        .background(Color.White)
-                        .border(1.dp, Color.Black.copy(alpha = 0.4f))
-                )
+                key(clip.id, timeMs) {
+                    var kfDragMs by remember(clip.id, timeMs) { mutableFloatStateOf(0f) }
+                    val liveKfMs = (timeMs + kfDragMs.toLong())
+                        .coerceIn(0, clip.timelineDurationMs)
+                    val x = state.msToPx(liveKfMs)
+                    Box(
+                        Modifier
+                            .offset { IntOffset(x.roundToInt() - 10, 0) }
+                            .align(Alignment.CenterStart)
+                            .size(20.dp) // generous touch target
+                            .pointerInput(clip.id, timeMs, isSelected) {
+                                if (!isSelected) return@pointerInput
+                                detectDragGestures(
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        kfDragMs += dragAmount.x / state.pxPerMs
+                                    },
+                                    onDragEnd = {
+                                        val target = (timeMs + kfDragMs.toLong())
+                                            .coerceIn(0, clip.timelineDurationMs)
+                                        kfDragMs = 0f
+                                        if (target != timeMs) {
+                                            actions.onMoveKeyframe(clip.id, timeMs, target)
+                                        }
+                                    },
+                                    onDragCancel = { kfDragMs = 0f },
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .graphicsLayer(rotationZ = 45f)
+                                .background(if (kfDragMs != 0f) Saffron else Color.White)
+                                .border(1.dp, Color.Black.copy(alpha = 0.4f))
+                        )
+                    }
+                }
             }
 
             if (isSelected && !clip.locked) {
