@@ -1,0 +1,424 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "254c8af09d9e5e979f6222a4819c78b4",
+    "entities": [
+      {
+        "tableName": "projects",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `createdAtMs` INTEGER NOT NULL, `modifiedAtMs` INTEGER NOT NULL, `canvasWidth` INTEGER NOT NULL, `canvasHeight` INTEGER NOT NULL, `frameRate` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtMs",
+            "columnName": "createdAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modifiedAtMs",
+            "columnName": "modifiedAtMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "canvasWidth",
+            "columnName": "canvasWidth",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "canvasHeight",
+            "columnName": "canvasHeight",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frameRate",
+            "columnName": "frameRate",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "tracks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `projectId` INTEGER NOT NULL, `type` TEXT NOT NULL, `zOrder` INTEGER NOT NULL, FOREIGN KEY(`projectId`) REFERENCES `projects`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "projectId",
+            "columnName": "projectId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "zOrder",
+            "columnName": "zOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_tracks_projectId",
+            "unique": false,
+            "columnNames": [
+              "projectId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tracks_projectId` ON `${TABLE_NAME}` (`projectId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "projects",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "projectId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "clips",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `trackId` INTEGER NOT NULL, `type` TEXT NOT NULL, `sourceUri` TEXT NOT NULL, `sourceStartMs` INTEGER NOT NULL, `sourceEndMs` INTEGER NOT NULL, `sourceDurationMs` INTEGER NOT NULL, `timelineStartMs` INTEGER NOT NULL, `speed` REAL NOT NULL, `volume` REAL NOT NULL, `fadeInMs` INTEGER NOT NULL, `fadeOutMs` INTEGER NOT NULL, `voiceEffectId` TEXT, `positionX` REAL NOT NULL, `positionY` REAL NOT NULL, `scale` REAL NOT NULL, `rotationDeg` REAL NOT NULL, `flipH` INTEGER NOT NULL, `flipV` INTEGER NOT NULL, `opacity` REAL NOT NULL, `adjustBrightness` REAL NOT NULL, `adjustContrast` REAL NOT NULL, `adjustSaturation` REAL NOT NULL, `adjustHue` REAL NOT NULL, `adjustTemperature` REAL NOT NULL, `adjustTint` REAL NOT NULL, `transitionId` TEXT, `transitionDurationMs` INTEGER NOT NULL, `filterId` TEXT, `filterIntensity` REAL NOT NULL, `payload` TEXT, FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackId",
+            "columnName": "trackId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceUri",
+            "columnName": "sourceUri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceStartMs",
+            "columnName": "sourceStartMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceEndMs",
+            "columnName": "sourceEndMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceDurationMs",
+            "columnName": "sourceDurationMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timelineStartMs",
+            "columnName": "timelineStartMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "speed",
+            "columnName": "speed",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "volume",
+            "columnName": "volume",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fadeInMs",
+            "columnName": "fadeInMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fadeOutMs",
+            "columnName": "fadeOutMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "voiceEffectId",
+            "columnName": "voiceEffectId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "positionX",
+            "columnName": "positionX",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "positionY",
+            "columnName": "positionY",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scale",
+            "columnName": "scale",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rotationDeg",
+            "columnName": "rotationDeg",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flipH",
+            "columnName": "flipH",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flipV",
+            "columnName": "flipV",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "opacity",
+            "columnName": "opacity",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "adjustBrightness",
+            "columnName": "adjustBrightness",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "adjustContrast",
+            "columnName": "adjustContrast",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "adjustSaturation",
+            "columnName": "adjustSaturation",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "adjustHue",
+            "columnName": "adjustHue",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "adjustTemperature",
+            "columnName": "adjustTemperature",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "adjustTint",
+            "columnName": "adjustTint",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transitionId",
+            "columnName": "transitionId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "transitionDurationMs",
+            "columnName": "transitionDurationMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "filterId",
+            "columnName": "filterId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "filterIntensity",
+            "columnName": "filterIntensity",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_clips_trackId",
+            "unique": false,
+            "columnNames": [
+              "trackId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_clips_trackId` ON `${TABLE_NAME}` (`trackId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "tracks",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "trackId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "keyframes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `clipId` INTEGER NOT NULL, `property` TEXT NOT NULL, `timeMs` INTEGER NOT NULL, `value` REAL NOT NULL, `easing` TEXT NOT NULL, FOREIGN KEY(`clipId`) REFERENCES `clips`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clipId",
+            "columnName": "clipId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "property",
+            "columnName": "property",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeMs",
+            "columnName": "timeMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "value",
+            "columnName": "value",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "easing",
+            "columnName": "easing",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_keyframes_clipId",
+            "unique": false,
+            "columnNames": [
+              "clipId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_keyframes_clipId` ON `${TABLE_NAME}` (`clipId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "clips",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "clipId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '254c8af09d9e5e979f6222a4819c78b4')"
+    ]
+  }
+}

@@ -8,7 +8,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.mastar.editor.data.db.ClipEntity
-import com.mastar.editor.engine.effects.FilterLibrary
+import com.mastar.editor.data.db.ClipType
+import com.mastar.editor.engine.effects.EffectResolver
 
 /**
  * Timeline preview built on Media3 ExoPlayer.
@@ -89,17 +90,24 @@ class PreviewEngine(context: Context) {
         val clip = timelineClips.getOrNull(index)
         // setVideoEffects is flagged unstable; never let a preview-effect
         // failure take down playback itself.
-        runCatching { player.setVideoEffects(FilterLibrary.effectsFor(clip?.filterId)) }
+        runCatching {
+            player.setVideoEffects(clip?.let { EffectResolver.videoEffectsFor(it) } ?: emptyList())
+        }
     }
 
-    private fun ClipEntity.toMediaItem(): MediaItem =
-        MediaItem.Builder()
-            .setUri(Uri.parse(sourceUri))
-            .setClippingConfiguration(
+    private fun ClipEntity.toMediaItem(): MediaItem {
+        val builder = MediaItem.Builder().setUri(Uri.parse(sourceUri))
+        if (type == ClipType.IMAGE) {
+            // ExoPlayer's ImageRenderer shows stills for a fixed duration.
+            builder.setImageDurationMs(timelineDurationMs)
+        } else {
+            builder.setClippingConfiguration(
                 MediaItem.ClippingConfiguration.Builder()
                     .setStartPositionMs(sourceStartMs)
                     .setEndPositionMs(sourceEndMs)
                     .build()
             )
-            .build()
+        }
+        return builder.build()
+    }
 }

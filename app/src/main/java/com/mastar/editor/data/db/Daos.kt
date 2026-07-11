@@ -26,9 +26,18 @@ interface ProjectDao {
     @Query("SELECT * FROM projects ORDER BY modifiedAtMs DESC")
     fun observeProjects(): Flow<List<ProjectEntity>>
 
+    /** Home screen cards need clips for thumbnails + duration. */
+    @Transaction
+    @Query("SELECT * FROM projects ORDER BY modifiedAtMs DESC")
+    fun observeProjectsWithTracks(): Flow<List<ProjectWithTracks>>
+
     @Transaction
     @Query("SELECT * FROM projects WHERE id = :projectId")
     fun observeProjectWithTracks(projectId: Long): Flow<ProjectWithTracks?>
+
+    @Transaction
+    @Query("SELECT * FROM projects WHERE id = :projectId")
+    suspend fun projectWithTracks(projectId: Long): ProjectWithTracks?
 
     @Insert
     suspend fun insertProject(project: ProjectEntity): Long
@@ -62,6 +71,24 @@ interface ClipDao {
 
     @Query("SELECT * FROM clips WHERE id = :clipId")
     suspend fun clipById(clipId: Long): ClipEntity?
+
+    @Insert
+    suspend fun insertClips(clips: List<ClipEntity>)
+
+    @Query(
+        "DELETE FROM clips WHERE trackId IN (SELECT id FROM tracks WHERE projectId = :projectId)"
+    )
+    suspend fun deleteClipsForProject(projectId: Long)
+
+    /**
+     * Restores a full clip snapshot (undo/redo). Clip ids are preserved so
+     * selection and snapshots stay consistent across restores.
+     */
+    @Transaction
+    suspend fun replaceAllClips(projectId: Long, clips: List<ClipEntity>) {
+        deleteClipsForProject(projectId)
+        insertClips(clips)
+    }
 
     /**
      * Splitting a clip = replacing one timestamp row with two. The source

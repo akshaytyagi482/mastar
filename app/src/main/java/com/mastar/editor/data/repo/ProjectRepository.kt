@@ -18,6 +18,17 @@ class ProjectRepository(private val db: MastarDatabase) {
 
     fun observeProjects(): Flow<List<ProjectEntity>> = db.projectDao().observeProjects()
 
+    fun observeProjectsWithTracks(): Flow<List<ProjectWithTracks>> =
+        db.projectDao().observeProjectsWithTracks()
+
+    suspend fun updateProject(project: ProjectEntity) = db.projectDao().updateProject(project)
+
+    suspend fun deleteProject(projectId: Long) = db.projectDao().deleteProject(projectId)
+
+    /** Restores a clip snapshot (undo/redo). */
+    suspend fun replaceAllClips(projectId: Long, clips: List<ClipEntity>) =
+        db.clipDao().replaceAllClips(projectId, clips)
+
     fun observeProject(projectId: Long): Flow<ProjectWithTracks?> =
         db.projectDao().observeProjectWithTracks(projectId)
 
@@ -44,6 +55,7 @@ class ProjectRepository(private val db: MastarDatabase) {
             sourceUri = sourceUri,
             sourceStartMs = 0,
             sourceEndMs = sourceDurationMs,
+            sourceDurationMs = sourceDurationMs,
             timelineStartMs = timelineStartMs,
         )
     )
@@ -52,12 +64,70 @@ class ProjectRepository(private val db: MastarDatabase) {
 
     suspend fun deleteClip(clipId: Long) = db.clipDao().deleteClip(clipId)
 
+    /**
+     * Freeze frame: splits [clip] at [playheadMs], ripples same-track clips
+     * right by [durationMs], and inserts the still image in the gap.
+     * Reads fresh DB state between steps (the observing Flow lags writes).
+     */
+    suspend fun insertFreezeFrame(
+        projectId: Long,
+        clip: ClipEntity,
+        playheadMs: Long,
+        imageUri: String,
+        durationMs: Long,
+    ) {
+        splitClipAt(clip, playheadMs)
+        val fresh = db.projectDao().projectWithTracks(projectId) ?: return
+        fresh.tracks.firstOrNull { it.track.id == clip.trackId }?.clips
+            ?.filter { it.timelineStartMs >= playheadMs }
+            ?.forEach { c ->
+                db.clipDao().updateClip(c.copy(timelineStartMs = c.timelineStartMs + durationMs))
+            }
+        db.clipDao().insertClip(
+            ClipEntity(
+                trackId = clip.trackId,
+                type = ClipType.IMAGE,
+                sourceUri = imageUri,
+                sourceStartMs = 0,
+                sourceEndMs = durationMs,
+                sourceDurationMs = durationMs,
+                timelineStartMs = playheadMs,
+            )
+        )
+    }
+
     /** Split at a project-timeline position; converts to source time internally. */
     suspend fun splitClipAt(clip: ClipEntity, timelineMs: Long) {
         val offsetIntoClip = timelineMs - clip.timelineStartMs
         if (offsetIntoClip <= 0 || timelineMs >= clip.timelineEndMs) return
         val atSourceMs = clip.sourceStartMs + (offsetIntoClip * clip.speed).toLong()
         db.clipDao().splitClip(clip.id, atSourceMs, timelineMs)
+    }
+
+    /** CapCut-style duplicate: the copy lands right after the original. */
+    suspend fun duplicateClip(clip: ClipEntity): Long =
+        db.clipDao().insertClip(clip.copy(id = 0, timelineStartMs = clip.timelineEndMs))
+
+    /** Deep-copies a project with all tracks and clips. */
+    suspend fun duplicateProject(projectId: Long, nowMs: Long): Long? {
+        val source = db.projectDao().projectWithTracks(projectId) ?: return null
+        val newProjectId = db.projectDao().insertProject(
+            source.project.copy(
+                id = 0,
+                name = "${source.project.name} copy",
+                createdAtMs = nowMs,
+                modifiedAtMs = nowMs,
+            )
+        )
+        for (trackWithClips in source.tracks) {
+            val newTrackId = db.trackDao().insertTrack(
+                trackWithClips.track.copy(id = 0, projectId = newProjectId)
+            )
+            for (clip in trackWithClips.clips) {
+                db.clipDao().insertClip(clip.copy(id = 0, trackId = newTrackId))
+            }
+        }
+        return newProjectId
     }
 
     /** Returns the project's track of [type], creating it (top z-order) if absent. */
@@ -84,6 +154,8 @@ class ProjectRepository(private val db: MastarDatabase) {
             sourceUri = "",
             sourceStartMs = 0,
             sourceEndMs = durationMs,
+            // Overlays have no real source; allow trimming out to an hour.
+            sourceDurationMs = 3_600_000,
             timelineStartMs = timelineStartMs,
             payload = payload,
         )

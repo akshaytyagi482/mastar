@@ -67,17 +67,33 @@ data class ClipEntity(
     /** Window into the source file (the "cut", in source-media time). */
     val sourceStartMs: Long,
     val sourceEndMs: Long,
+    /** Full length of the source file — the ceiling when re-expanding a trim. */
+    val sourceDurationMs: Long = 0,
     /** Where the clip sits on the project timeline. */
     val timelineStartMs: Long,
     /** 1.0 = normal. Raw speed is handled by Media3; smooth curves come later. */
     val speed: Float = 1f,
     val volume: Float = 1f,
+    /** Audio fade ramps at the clip's edges. */
+    val fadeInMs: Long = 0,
+    val fadeOutMs: Long = 0,
+    /** Voice effect preset id (see VoiceEffects). */
+    val voiceEffectId: String? = null,
     /** Static transform (keyframes override these when present). */
     val positionX: Float = 0.5f,
     val positionY: Float = 0.5f,
     val scale: Float = 1f,
     val rotationDeg: Float = 0f,
+    val flipH: Boolean = false,
+    val flipV: Boolean = false,
     val opacity: Float = 1f,
+    /** Manual color adjustments, all normalized to -1..1 (0 = untouched). */
+    val adjustBrightness: Float = 0f,
+    val adjustContrast: Float = 0f,
+    val adjustSaturation: Float = 0f,
+    val adjustHue: Float = 0f,
+    val adjustTemperature: Float = 0f,
+    val adjustTint: Float = 0f,
     /** GL transition INTO the next clip, e.g. "fade", "directionalwipe". */
     val transitionId: String? = null,
     val transitionDurationMs: Long = 0,

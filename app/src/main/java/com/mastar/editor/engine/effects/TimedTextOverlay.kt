@@ -1,28 +1,41 @@
 package com.mastar.editor.engine.effects
 
 import android.graphics.Color
+import android.graphics.Typeface
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.style.AbsoluteSizeSpan
+import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.text.style.TypefaceSpan
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.TextOverlay
 
 /**
- * A text overlay that is only visible inside its clip's timeline window.
- * Applied at composition level during export, so presentation time here is
- * absolute project-timeline time — exactly what ClipEntity stores.
+ * A styled text overlay that is only visible inside its clip's timeline
+ * window. Applied at composition level during export, so presentation time
+ * here is absolute project-timeline time — exactly what ClipEntity stores.
  */
 @UnstableApi
 class TimedTextOverlay(
-    text: String,
+    payload: String,
     private val startMs: Long,
     private val endMs: Long,
 ) : TextOverlay() {
 
-    private val visibleText = SpannableString(text).apply {
-        setSpan(ForegroundColorSpan(Color.WHITE), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-        setSpan(AbsoluteSizeSpan(72), 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    private val visibleText: SpannableString = run {
+        val style = TextPayload.fromPayload(payload)
+        SpannableString(style.text).apply {
+            fun span(what: Any) = setSpan(what, 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            span(ForegroundColorSpan(style.color.toInt()))
+            // Rough sp -> export-canvas px mapping; text is rendered onto the
+            // output frame, which is much larger than a phone's dp space.
+            span(AbsoluteSizeSpan(style.sizeSp * 3))
+            if (style.bold) span(StyleSpan(Typeface.BOLD))
+            if (style.background) span(BackgroundColorSpan(Color.argb(160, 0, 0, 0)))
+            if (style.font != "sans") span(TypefaceSpan(androidFontFamily(style.font)))
+        }
     }
 
     // A single space renders as an invisible 1-glyph bitmap; TextOverlay does
@@ -32,5 +45,12 @@ class TimedTextOverlay(
     override fun getText(presentationTimeUs: Long): SpannableString {
         val timeMs = presentationTimeUs / 1000
         return if (timeMs in startMs until endMs) visibleText else hiddenText
+    }
+
+    private fun androidFontFamily(font: String): String = when (font) {
+        "serif" -> "serif"
+        "mono" -> "monospace"
+        "cursive" -> "cursive"
+        else -> "sans-serif"
     }
 }
