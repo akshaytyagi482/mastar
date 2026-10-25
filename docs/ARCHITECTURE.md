@@ -26,13 +26,14 @@ ProjectEntity 1─* TrackEntity 1─* ClipEntity 1─* KeyframeEntity
 ## Playback path (preview)
 
 ```
-Room Flow ──> EditorViewModel ──> PreviewEngine (ExoPlayer)
-                                   └─ MediaItem + ClippingConfiguration per clip
+Room Flow ──> EditorViewModel ──> PreviewEngine (CompositionPlayer)
+                                   └─ CompositionFactory
 ```
 
-`PreviewEngine.setTimeline()` rebuilds the ExoPlayer playlist from clip
-metadata. ExoPlayer performs the seeks/clipping natively, so re-rendering the
-timeline after an edit costs microseconds.
+`PreviewEngine.setTimeline()` rebuilds the Media3 composition from clip and
+layer metadata. Preview and export share `CompositionFactory`, while preview
+uses a device-adaptive output size to keep GPU work bounded on lower-memory
+phones.
 
 ## Export path
 
@@ -46,6 +47,35 @@ clips ──> EditedMediaItem(Clipping + Effects) ──> EditedMediaItemSequenc
 - `Presentation.createForWidthAndHeight` letterboxes everything into the
   project canvas (default 1080x1920@30).
 - H.264/AAC output: the most widely hardware-accelerated combo in India.
+
+## Low-memory rendering profile
+
+Preview resolution is selected from Android's device memory signals rather
+than being tied to the project canvas: memory-constrained phones render at a
+360px short side, modest-memory phones at 480px, and higher-memory phones at
+540px. Export uses the selected output resolution and is not reduced by this
+preview cap. Transition frame caches also use a smaller long side on
+memory-constrained phones and include that size in their cache key. On API 27+
+video frames are requested at cache size; older versions use a full-frame
+fallback. Large still images are sampled before decode, and temporary bitmaps
+are released even when cache writes fail. Playback reuses a mutable RGB_565
+bitmap for transition frames to reduce allocation churn.
+
+The supplied CapCut 19.9.0 APK manifest reports minSdk 23 and targetSdk 36;
+that install declaration does not establish a minimum RAM amount or guarantee
+every feature runs on every API 23 device. These buckets are Mastar's
+device-adaptive policy, not a claim about CapCut's internal thresholds.
+Validate them on representative devices before making performance guarantees.
+
+REA static inspection of the supplied CapCut 19.9.0 APK found
+`com.vega.edit.HWCodecServiceImpl` delegating export capability queries to
+`HWCodecUtil`. Its resolution-selection method keeps the requested value when
+the returned capability list is unavailable or already supports it, and
+otherwise chooses the list's last value. This is static decompiler evidence,
+not runtime proof. Mastar implements the same general capability-aware
+fallback independently: `AvcResolutionSelector` queries Android AVC encoder
+size support and steps down through standard output sizes only when needed.
+It does not use CapCut code or its private native engine.
 
 ## Keyframe engine
 
@@ -101,10 +131,10 @@ are cached in memory by `TransitionLibrary` (zero-lag first tap).
 - **Stickers** are STICKER clips (payload = bundled Lottie asset). Preview
   renders via lottie-compose; baking stickers into the export is pending
   (BitmapOverlay from Lottie frames).
-- **GL transitions**: selection persists on clips (`transitionId`); the C++
-  shader host is built and bundled. Rendering across clip boundaries in
-  preview/export is the next engine milestone (SurfaceTexture pipeline /
-  custom GlEffect).
+- **Transitions**: selection persists on clips (`transitionId`). The current
+  path caches downscaled incoming frames and composites them as timed bitmap
+  overlays in the shared Media3 composition. The bundled C++ shader host is a
+  separate path and is not yet connected to preview/export.
 
 ### Still pending (Phase 4 full scope)
 

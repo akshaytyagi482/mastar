@@ -50,11 +50,32 @@ class FrameSequenceOverlay(
         val index = (progressAt(timeMs) * (frames.size - 1)).toInt()
             .coerceIn(0, frames.size - 1)
         if (index != lastIndex) {
-            val decoded = runCatching {
-                BitmapFactory.decodeFile(frames[index].absolutePath)
+            // Reuse the previous transition bitmap where dimensions match and
+            // decode to RGB_565. This avoids a full ARGB allocation and reduces
+            // garbage collection churn on every transition frame.
+            val reusable = lastBitmap
+            val decoded = reusable?.let { bitmap ->
+                runCatching {
+                    BitmapFactory.decodeFile(
+                        frames[index].absolutePath,
+                        BitmapFactory.Options().apply {
+                            inPreferredConfig = Bitmap.Config.RGB_565
+                            inMutable = true
+                            inBitmap = bitmap
+                        },
+                    )
+                }.getOrNull()
+            } ?: runCatching {
+                BitmapFactory.decodeFile(
+                    frames[index].absolutePath,
+                    BitmapFactory.Options().apply {
+                        inPreferredConfig = Bitmap.Config.RGB_565
+                        inMutable = true
+                    },
+                )
             }.getOrNull()
             if (decoded != null) {
-                lastBitmap?.recycle()
+                if (decoded !== reusable) reusable?.recycle()
                 lastBitmap = decoded
                 lastIndex = index
             }

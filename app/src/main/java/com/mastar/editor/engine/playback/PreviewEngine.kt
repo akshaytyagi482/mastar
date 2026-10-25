@@ -7,6 +7,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.PreviewingMultipleInputVideoGraph
 import androidx.media3.transformer.CompositionPlayer
+import com.mastar.editor.engine.DeviceRenderProfile
 import com.mastar.editor.engine.CompositionFactory
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +24,8 @@ import kotlinx.coroutines.flow.StateFlow
 @UnstableApi
 class PreviewEngine(private val context: Context) {
 
+    private val renderProfile = DeviceRenderProfile.from(context)
+
     private val _player = MutableStateFlow<Player?>(null)
     val playerFlow: StateFlow<Player?> = _player
     val player: Player? get() = _player.value
@@ -35,10 +38,11 @@ class PreviewEngine(private val context: Context) {
     private var canvasHeight = 1920
     private var lastSeekUptimeMs = 0L
 
-    /** Preview renders at reduced resolution to stay cool on budget phones. */
+    /** Preview quality adapts to device memory; export remains full quality. */
     private fun previewSize(): Pair<Int, Int> {
         val shortSide = minOf(canvasWidth, canvasHeight)
-        val scale = if (shortSide > 540) 540f / shortSide else 1f
+        val previewShortSide = renderProfile.previewShortSidePixels
+        val scale = if (shortSide > previewShortSide) previewShortSide.toFloat() / shortSide else 1f
         return Pair(
             ((canvasWidth * scale).toInt() and -2),
             ((canvasHeight * scale).toInt() and -2),

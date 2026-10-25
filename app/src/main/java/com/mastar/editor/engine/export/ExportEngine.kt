@@ -49,11 +49,14 @@ class ExportEngine(private val context: Context) {
         settings: Settings,
         listener: Listener,
     ) {
-        // Scale the canvas to the requested resolution, keeping aspect.
-        val shortSide = minOf(canvasWidth, canvasHeight)
-        val scale = settings.resolution / shortSide.toFloat()
-        val outWidth = ((canvasWidth * scale).toInt()) and -2
-        val outHeight = ((canvasHeight * scale).toInt()) and -2
+        // Honor the selected export size when possible. If device AVC
+        // encoders report that it is unsupported, step down by standard
+        // sizes while preserving the canvas aspect ratio.
+        val (outWidth, outHeight) = AvcResolutionSelector.select(
+            canvasWidth,
+            canvasHeight,
+            settings.resolution,
+        )
 
         val composition: Composition =
             CompositionFactory.build(context, layers, outWidth, outHeight)
