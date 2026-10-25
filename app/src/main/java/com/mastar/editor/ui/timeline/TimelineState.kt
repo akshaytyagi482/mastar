@@ -50,6 +50,10 @@ class TimelineState(
         pxPerMs = newScale
         val maxScrollPx = projectDurationMs.coerceAtLeast(0L) * newScale
         scrollPx = (focalTimeMs * newScale - focalOffsetFromCenter).coerceIn(0f, maxScrollPx)
+        // The editor's playhead is fixed at the viewport center. Off-center
+        // pinches can move a different time beneath it, so keep preview time
+        // synchronized with that new center position.
+        playheadMs = pxToMs(scrollPx)
     }
 
     /** Fit a newly loaded/grown project into the initial timeline viewport. */

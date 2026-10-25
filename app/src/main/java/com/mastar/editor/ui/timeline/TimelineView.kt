@@ -124,8 +124,8 @@ fun TimelineView(
             .pointerInput(projectEndMs) {
                 detectTransformGestures { centroid, pan, zoom, _ ->
                     if (zoom != 1f) state.zoomBy(zoom, centroid.x, size.width.toFloat(), projectEndMs)
-                    if (pan.x != 0f) {
-                        state.scrollBy(-pan.x, state.msToPx(projectEndMs))
+                    if (zoom != 1f || pan.x != 0f) {
+                        if (pan.x != 0f) state.scrollBy(-pan.x, state.msToPx(projectEndMs))
                         state.playheadMs = state.pxToMs(state.scrollPx)
                         actions.onSeek(state.playheadMs)
                     }

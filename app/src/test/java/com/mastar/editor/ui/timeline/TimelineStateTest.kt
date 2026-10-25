@@ -22,5 +22,6 @@ class TimelineStateTest {
         val after = (state.scrollPx + centroidX - viewportWidthPx / 2f) / state.pxPerMs
         assertEquals(before, after, 0.5f)
         assertEquals(0.12f, state.pxPerMs, 0.0001f)
+        assertEquals(state.pxToMs(state.scrollPx), state.playheadMs)
     }
 }
