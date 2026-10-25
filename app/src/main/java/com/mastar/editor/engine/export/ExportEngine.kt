@@ -1,6 +1,7 @@
 package com.mastar.editor.engine.export
 
 import android.content.Context
+import android.util.Log
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.transformer.Composition
@@ -83,6 +84,11 @@ class ExportEngine(private val context: Context) {
                     exportResult: ExportResult,
                     exportException: ExportException,
                 ) {
+                    Log.e(
+                        "MastarExport",
+                        "Transformer failed (errorCode=${exportException.errorCode})",
+                        exportException,
+                    )
                     listener.onState(State.Failed(exportException))
                 }
             })

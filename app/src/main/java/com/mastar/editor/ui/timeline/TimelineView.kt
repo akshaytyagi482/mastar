@@ -34,6 +34,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -135,6 +136,9 @@ fun TimelineView(
             },
     ) {
         val viewportWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+        LaunchedEffect(projectEndMs, viewportWidthPx) {
+            state.fitProject(projectEndMs, viewportWidthPx)
+        }
         val allClips = tracks.flatMap { it.clips }
         val hasAudio = tracks.any { it.track.type == TrackType.AUDIO && it.clips.isNotEmpty() }
 

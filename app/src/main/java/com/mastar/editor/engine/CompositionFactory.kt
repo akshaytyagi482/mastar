@@ -117,17 +117,21 @@ object CompositionFactory {
         // Text proportion is anchored to a 360sp-wide reference canvas.
         val textPxPerSp = minOf(outWidth, outHeight) / 360f
 
-        return Composition.Builder(sequences)
+        val compositionBuilder = Composition.Builder(sequences)
             .setEffects(
                 compositionEffects(
                     context, layers, imagePipClips, segments, textPxPerSp,
                     outWidth, outHeight,
                 )
             )
-            .setVideoCompositorSettings(
+        // Media3's single-input graph cannot accept compositor settings.
+        // Add them only when video PIP lanes require the multi-input graph.
+        if (videoPipLanes.isNotEmpty()) {
+            compositionBuilder.setVideoCompositorSettings(
                 PipCompositorSettings(videoPipLanes, layers.keyframesByClip)
             )
-            .build()
+        }
+        return compositionBuilder.build()
     }
 
     /** The incoming clip's head, animated over the outgoing clip. */

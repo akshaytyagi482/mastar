@@ -20,6 +20,9 @@ class TimelineState(
     var pxPerMs by mutableFloatStateOf(initialPxPerMs)
         private set
 
+    /** Once the user pinches, keep their chosen zoom across project edits. */
+    private var manuallyZoomed = false
+
     /** Horizontal scroll offset in px (0 = timeline start at playhead). */
     var scrollPx by mutableFloatStateOf(0f)
 
@@ -35,7 +38,18 @@ class TimelineState(
 
     /** Pinch-to-zoom, clamped so 1 frame (33ms) never exceeds ~120px. */
     fun zoomBy(factor: Float) {
+        manuallyZoomed = true
         pxPerMs = (pxPerMs * factor).coerceIn(MIN_PX_PER_MS, MAX_PX_PER_MS)
+    }
+
+    /** Fit a newly loaded/grown project into the initial timeline viewport. */
+    fun fitProject(projectDurationMs: Long, viewportWidthPx: Float) {
+        if (manuallyZoomed || projectDurationMs <= 0L || viewportWidthPx <= 0f) return
+        // The playhead stays centered, so reserve half the viewport for the
+        // timeline from its zero point and keep a small margin at the edge.
+        val fitPxPerMs = (viewportWidthPx * 0.45f / projectDurationMs)
+            .coerceIn(MIN_PX_PER_MS, DEFAULT_PX_PER_MS)
+        pxPerMs = fitPxPerMs
     }
 
     fun scrollBy(deltaPx: Float, contentWidthPx: Float) {
