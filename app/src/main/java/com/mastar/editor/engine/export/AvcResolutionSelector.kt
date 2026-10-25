@@ -1,5 +1,3 @@
-package com.mastar.editor.engine.export
-
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.os.Build
@@ -28,20 +26,29 @@ internal object AvcResolutionSelector {
 
         // Prefer hardware encoders where the platform exposes that signal; on
         // older Android releases use the complete AVC encoder list.
-        val hardwareEncoders = if (Build.VER×m÷¶‰Ëkºwµç\Ù][˜ÛÙ\‘˜XİÜJ[˜ÛÙ\‘˜XİÜJCBˆ˜Y\İ[™\ŠØš™Xİˆ˜[œÙ›Ü›Y\‹“\İ[™\ˆÃBˆİ™\œšYH[ˆÛÛÛ\]Y
-ÛÛ\ÜÚ][ÛˆÛÛ\ÜÚ][Û‹^Ü™\İ[ˆ^Ü™\İ[
-HÃBˆ\İ[™\‹›Û”İ]Jİ]K‘Û™Jİ]]š[JJCBˆCBƒBˆİ™\œšYH[ˆÛ‘\œ›ÜŠBˆÛÛ\ÜÚ][ÛˆÛÛ\ÜÚ][Û‹Bˆ^Ü™\İ[ˆ^Ü™\İ[Bˆ^Ü^Ù\[Ûˆ^Ü^Ù\[Û‹Bˆ
-HÃBˆ\İ[™\‹›Û”İ]Jİ]K‘˜Z[Y
-^Ü^Ù\[ÛŠJCBˆCBˆJCBˆ˜Z[
+        val hardwareEncoders = if (Build.VERSION.SDK_INT >= 29) {
+            encoders.filter { it.isHardwareAccelerated }
+        } else {
+            encoders.filterNot { it.name.startsWith("OMX.google.", true) || it.name.startsWith("c2.android.", true) }
+        }
+        val softwareOrUnknownEncoders = encoders - hardwareEncoders.toSet()
 
-CBƒBˆ˜[œÙ›Ü›Y\ˆHBˆ\İ[™\‹›Û”İ]Jİ]K‘^Ü[™Ê
-JCBˆœİ\
-ÛÛ\ÜÚ][Û‹İ]]š[K˜XœÛÛ]T]
-CBˆCBƒBˆÊŠˆÛÈ^Ü›ÙÜ™\ÜÎÈØ[œ›ÛHHÛÜ›İ][™HXÚÙ\ˆÚ[H^Ü[™Ëˆ
-‹ÃBˆ[ˆ]Y\T›ÙÜ™\ÜÊ
-Nˆ[ÃBˆ˜[Û\ˆH›ÙÜ™\ÜÒÛ\Š
-CBˆ˜[œÙ›Ü›Y\Ë™Ù]›ÙÜ™\ÜÊÛ\ŠCBˆ™]\›ˆÛ\‹œ›ÙÜ™\ÜÃBˆCBƒBˆ[ˆØ[˜Ù[
+        fun supportedSize(codecInfos: List<MediaCodecInfo>): Pair<Int, Int>? =
+            candidates.firstOrNull { (width, height) ->
+                codecInfos.any { info ->
+                    runCatching {
+                        info.getCapabilitiesForType("video/avc")
+                            .videoCapabilities
+                            .isSizeSupported(width, height)
+                    }.getOrDefault(false)
+                }
+            }
 
-HÃBˆ˜[œÙ›Ü›Y\Ë˜Ø[˜Ù[
+        return supportedSize(hardwareEncoders)
+            ?: supportedSize(softwareOrUnknownEncoders)
+            ?: requested
+    }
+    private fun evenSize(width: Float, height: Float): Pair<Int, Int> =
+        (width.toInt() and -2) to (height.toInt() and -2)
+}
 
-CBˆ˜[œÙ›Ü›Y\ˆH[BˆCBŸCB
