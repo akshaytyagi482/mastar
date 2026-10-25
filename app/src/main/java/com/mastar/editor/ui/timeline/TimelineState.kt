@@ -37,9 +37,19 @@ class TimelineState(
     fun pxToMs(px: Float): Long = (px / pxPerMs).toLong()
 
     /** Pinch-to-zoom, clamped so 1 frame (33ms) never exceeds ~120px. */
-    fun zoomBy(factor: Float) {
+    fun zoomBy(factor: Float, focalX: Float, viewportWidthPx: Float, projectDurationMs: Long) {
+        if (factor <= 0f || viewportWidthPx <= 0f) return
         manuallyZoomed = true
-        pxPerMs = (pxPerMs * factor).coerceIn(MIN_PX_PER_MS, MAX_PX_PER_MS)
+        val oldScale = pxPerMs
+        val newScale = (oldScale * factor).coerceIn(MIN_PX_PER_MS, MAX_PX_PER_MS)
+        if (newScale == oldScale) return
+
+        // Keep the timeline time beneath the pinch centroid stationary.
+        val focalOffsetFromCenter = focalX - viewportWidthPx / 2f
+        val focalTimeMs = (scrollPx + focalOffsetFromCenter) / oldScale
+        pxPerMs = newScale
+        val maxScrollPx = projectDurationMs.coerceAtLeast(0L) * newScale
+        scrollPx = (focalTimeMs * newScale - focalOffsetFromCenter).coerceIn(0f, maxScrollPx)
     }
 
     /** Fit a newly loaded/grown project into the initial timeline viewport. */
